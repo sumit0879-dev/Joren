@@ -1,0 +1,2512 @@
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  Session,
+  Message,
+  Note,
+  CustomApp,
+  BuiltinApp,
+  PluginWithState,
+  ProviderDef,
+  ProviderModel,
+  WeatherResult,
+  MemoryChunk,
+  AgentStatus,
+  BrowserViewportBounds,
+  BrowserInfo,
+  BrowserTabInfo,
+  BrowserMultiStateInfo,
+  PageObservationSnapshot,
+  ScreenshotResult,
+  ElementInfo,
+  BrowserActionResult,
+  BrowserToolDefinition,
+  BrowserToolExecutionResult,
+  BrowserTaskState,
+  BrowserTaskResult,
+  BrowserActionContext,
+  BrowserRiskAssessment,
+  BrowserRiskAuditEntry,
+  PendingBrowserActionApproval,
+  BrowserTabWork,
+  BrowserOrchestrationTask,
+  BrowserSubtaskResult,
+  BrowserOrchestrationResult,
+  BrowserControlState,
+  TabControlInfo,
+  BrowserHistoryEntry,
+  BrowserBookmarkFolder,
+  BrowserBookmark,
+  BrowserDownload,
+  BrowserProfile,
+  PrivacyStatus,
+  PrivacyRule,
+  TabPrivacyStats,
+  FindResult,
+  ReaderDocument,
+  BrowserTabGroup,
+  RecoveryReport,
+} from '../types';
+import type { EdithEventEnvelope } from '../events/types';
+export * from '../events';
+
+export const isTauri = () => {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+};
+
+// Full catalog of supported hardcoded AI providers and models (Groq and Gemini only)
+export const DEFAULT_PROVIDERS: ProviderDef[] = [
+  {
+    id: 'groq',
+    name: 'Groq Cloud (Ultra-Fast)',
+    models: [
+      { id: 'llama-3.3-70b-versatile', label: 'Meta LLaMA 3.3 70B Versatile (Recommended)' },
+      { id: 'llama-3.1-8b-instant', label: 'Meta LLaMA 3.1 8B Instant (Ultra-Fast Chat)' },
+      { id: 'openai/gpt-oss-120b', label: 'OpenAI GPT-OSS 120B (High Performance)' },
+      { id: 'openai/gpt-oss-20b', label: 'OpenAI GPT-OSS 20B (Fast & Lightweight)' },
+      { id: 'deepseek-r1-distill-llama-70b', label: 'DeepSeek R1 Distill LLaMA 70B (Reasoning)' },
+      { id: 'qwen/qwen3.6-27b', label: 'Qwen 3.6 27B (Multilingual Reasoning)' },
+      { id: 'qwen-qwq-32b', label: 'Qwen QwQ 32B (Advanced Reasoning)' },
+      { id: 'groq/compound', label: 'Groq Compound Agentic System' },
+      { id: 'groq/compound-mini', label: 'Groq Compound Mini' },
+    ],
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini API',
+    models: [
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Analytical & Fast)' },
+      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite (Ultra Lightweight)' },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Deep Reasoning & Coding)' },
+      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Next-Gen Multimodal)' },
+      { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite (Cost-Efficient)' },
+      { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (High Speed)' },
+      { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (Long Context Window)' },
+      { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash (Frontier Agentic & Coding)' },
+      { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (Agentic Planning)' },
+      { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro (Frontier Multimodal Intelligence)' },
+    ],
+  },
+];
+
+export const DEFAULT_PLUGINS: PluginWithState[] = [
+  {
+    id: 'web_search',
+    name: 'Deep Web Search (Tavily)',
+    description: "DuckDuckGo & Tavily AI web search. Type 'search [query]' to fetch live web sources.",
+    category: 'utility',
+    enabled: true,
+  },
+  {
+    id: 'media_player',
+    name: 'Media Player (YouTube)',
+    description: "Searches and plays songs & videos on YouTube. Type 'play [song name]'.",
+    category: 'media',
+    enabled: true,
+  },
+  {
+    id: 'app_launcher',
+    name: 'Desktop App Launcher',
+    description: "Launches system and custom registered apps. Type 'open [app name]'.",
+    category: 'system',
+    enabled: true,
+  },
+  {
+    id: 'system_control',
+    name: 'System Control (Audio & Windows)',
+    description: "Volume up, volume down, and mute system audio. Say 'volume up' or 'mute'.",
+    category: 'system',
+    enabled: true,
+  },
+  {
+    id: 'terminal',
+    name: 'System Terminal',
+    description: "Execute shell commands with output. Type 'cmd [command]' or 'terminal [command]'.",
+    category: 'system',
+    enabled: true,
+  },
+  {
+    id: 'dev_agent',
+    name: 'Dev Agent (Joren)',
+    description: 'AI developer assistant that autonomously reads files and runs project commands.',
+    category: 'developer',
+    enabled: true,
+  },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp Integration',
+    description: "Send WhatsApp messages via deep link. Type 'whatsapp [number] [message]'.",
+    category: 'social',
+    enabled: true,
+  },
+  {
+    id: 'gmail',
+    name: 'Email Integration',
+    description: "Compose emails via default mail client. Type 'email [address] [message]'.",
+    category: 'social',
+    enabled: true,
+  },
+];
+
+export const DEFAULT_BUILTIN_APPS: BuiltinApp[] = [
+  { id: 'bi_notepad', name: 'notepad', path: 'notepad.exe', keywords: 'notepad,text,editor', builtin: true },
+  { id: 'bi_calc', name: 'calculator', path: 'calc.exe', keywords: 'calculator,calc,math', builtin: true },
+  { id: 'bi_chrome', name: 'chrome', path: 'chrome', keywords: 'chrome,browser,google', builtin: true },
+  { id: 'bi_explorer', name: 'file explorer', path: 'explorer.exe', keywords: 'explorer,files,folder', builtin: true },
+  { id: 'bi_cmd', name: 'command prompt', path: 'cmd.exe', keywords: 'cmd,command,prompt,terminal', builtin: true },
+  { id: 'bi_taskmgr', name: 'task manager', path: 'taskmgr.exe', keywords: 'task,manager,process', builtin: true },
+  { id: 'bi_settings', name: 'settings', path: 'ms-settings:', keywords: 'settings,control', builtin: true },
+  { id: 'bi_paint', name: 'paint', path: 'mspaint.exe', keywords: 'paint,draw,art', builtin: true },
+  { id: 'bi_vscode', name: 'vs code', path: 'code', keywords: 'vscode,code,editor,ide', builtin: true },
+];
+
+// LocalStorage helpers for browser/testing persistence
+const getStoredJson = <T>(key: string, fallback: T): T => {
+  try {
+    const val = localStorage.getItem(key);
+    return val ? JSON.parse(val) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const setStoredJson = (key: string, value: any) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+};
+
+// --- Settings ---
+export async function getAllSettings(): Promise<Record<string, string>> {
+  if (!isTauri()) {
+    return getStoredJson<Record<string, string>>('edith_settings', {});
+  }
+  try {
+    const res = await invoke<Record<string, string>>('get_all_settings');
+    return res || {};
+  } catch (e) {
+    console.warn('getAllSettings fallback to localStorage:', e);
+    return getStoredJson<Record<string, string>>('edith_settings', {});
+  }
+}
+
+export async function saveSetting(key: string, value: string): Promise<void> {
+  const current = getStoredJson<Record<string, string>>('edith_settings', {});
+  current[key] = value;
+  setStoredJson('edith_settings', current);
+
+  if (isTauri()) {
+    try {
+      await invoke('save_setting', { key, value });
+    } catch (e) {
+      console.warn('save_setting invoke failed:', e);
+    }
+  }
+}
+
+export async function syncSettings(settings: Record<string, string>): Promise<void> {
+  setStoredJson('edith_settings', settings);
+  if (isTauri()) {
+    try {
+      await invoke('sync_settings', { settings });
+    } catch (e) {
+      console.warn('sync_settings invoke failed:', e);
+    }
+  }
+}
+
+// --- Sessions & History ---
+export async function getAllSessions(): Promise<Session[]> {
+  if (!isTauri()) {
+    return getStoredJson<Session[]>('edith_sessions', [
+      { id: 'session_default', title: 'General Chat' },
+    ]);
+  }
+  try {
+    const res = await invoke<Session[]>('get_all_sessions');
+    return res && res.length > 0
+      ? res
+      : [{ id: 'session_default', title: 'General Chat' }];
+  } catch (e) {
+    return getStoredJson<Session[]>('edith_sessions', [
+      { id: 'session_default', title: 'General Chat' },
+    ]);
+  }
+}
+
+export async function createSession(sessionId: string, title: string): Promise<void> {
+  const list = getStoredJson<Session[]>('edith_sessions', []);
+  if (!list.find((s) => s.id === sessionId)) {
+    setStoredJson('edith_sessions', [{ id: sessionId, title }, ...list]);
+  }
+  if (isTauri()) {
+    try {
+      await invoke('create_session', { sessionId, title });
+    } catch (e) {
+      console.warn('create_session invoke error:', e);
+    }
+  }
+}
+
+export async function renameSession(sessionId: string, newTitle: string): Promise<void> {
+  const list = getStoredJson<Session[]>('edith_sessions', []);
+  setStoredJson(
+    'edith_sessions',
+    list.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s))
+  );
+  if (isTauri()) {
+    try {
+      await invoke('rename_session', { sessionId, newTitle });
+    } catch (e) {
+      console.warn('rename_session invoke error:', e);
+    }
+  }
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const list = getStoredJson<Session[]>('edith_sessions', []);
+  setStoredJson(
+    'edith_sessions',
+    list.filter((s) => s.id !== sessionId)
+  );
+  if (isTauri()) {
+    try {
+      await invoke('delete_session', { sessionId });
+    } catch (e) {
+      console.warn('delete_session invoke error:', e);
+    }
+  }
+}
+
+export async function getSessionMessages(sessionId: string): Promise<Message[]> {
+  if (!isTauri()) {
+    return getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+  }
+  try {
+    const res = await invoke<Message[]>('get_session_messages', { sessionId });
+    return res || [];
+  } catch (e) {
+    return getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+  }
+}
+
+export async function saveSessionMessage(
+  sessionId: string,
+  role: string,
+  text: string,
+  time: string
+): Promise<void> {
+  const msgs = getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+  msgs.push({ role: role as any, text, content: text, time, session_id: sessionId });
+  setStoredJson('edith_msgs_' + sessionId, msgs);
+
+  if (isTauri()) {
+    try {
+      await invoke('save_session_message', { sessionId, role, text, time });
+    } catch (e) {
+      console.warn('save_session_message invoke error:', e);
+    }
+  }
+}
+
+// --- Chat Command ---
+export interface ChatCommandResult {
+  response: string;
+  type: string;
+  stream_id?: string;
+  turn_id?: string;
+}
+
+export async function chatCommand(
+  message: string,
+  sessionId: string,
+  history: Array<{ role: string; text: string }>,
+  appSettings: Record<string, any>,
+  turnId?: string
+): Promise<ChatCommandResult> {
+  if (!isTauri()) {
+    // Helpful simulation when running in pure browser
+    const lower = message.toLowerCase();
+    if (lower.startsWith('open ')) {
+      return { response: 'Launched ' + message.slice(5) + ' (Simulated)', type: 'plugin', turn_id: turnId };
+    }
+    if (lower.startsWith('play ')) {
+      window.open('https://www.youtube.com/results?search_query=' + encodeURIComponent(message.slice(5)), '_blank');
+      return { response: 'Opening YouTube for: ' + message.slice(5), type: 'plugin', turn_id: turnId };
+    }
+    if (lower.startsWith('search ')) {
+      return {
+        response: '### 🌐 Search Results for "' + message.slice(7) + '"\n- **Source 1**: AI advancements demonstrate rapid reasoning speed.\n- **Source 2**: Multi-modal workflows are now integrated into modern desktops.',
+        type: 'ai',
+        turn_id: turnId,
+      };
+    }
+    return {
+      response: 'Hello! I am **Joren**. Tactical AI core active.\n\n```json\n{\n  "status": "connected",\n  "provider": "' + (appSettings.selectedProvider || 'groq') + '",\n  "model": "' + (appSettings.selectedModel || 'llama-3.3-70b-versatile') + '"\n}\n```\nHow may I assist you?',
+      type: 'ai',
+      turn_id: turnId,
+    };
+  }
+  return await invoke<ChatCommandResult>('chat_command', {
+    message,
+    sessionId,
+    history,
+    appSettings,
+    turnId,
+  });
+}
+
+// --- Providers ---
+export async function getProviders(): Promise<{ providers: ProviderDef[] }> {
+  if (!isTauri()) {
+    return { providers: DEFAULT_PROVIDERS };
+  }
+  try {
+    const res = await invoke<{ providers: ProviderDef[] }>('get_providers');
+    if (res && res.providers && res.providers.length > 0) {
+      return res;
+    }
+    return { providers: DEFAULT_PROVIDERS };
+  } catch (e) {
+    return { providers: DEFAULT_PROVIDERS };
+  }
+}
+
+// --- Local LLM Server ---
+export async function loadLocalLlm(path: string, loadMode: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('load_local_llm', { path, loadMode });
+}
+
+export async function stopLocalLlm(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('stop_local_llm');
+}
+
+export async function localChat(prompt: string, emitEvent?: string): Promise<string> {
+  if (!isTauri()) return '';
+  return await invoke('local_chat', { prompt, emitEvent });
+}
+
+// --- Dev Agent (Joren) ---
+export async function agentStatus(): Promise<AgentStatus> {
+  if (!isTauri()) return { is_ready: true, project_path: 'E:\\Projects\\E.D.I.T.H' };
+  try {
+    return await invoke('agent_status');
+  } catch {
+    return { is_ready: false, project_path: '' };
+  }
+}
+
+export async function agentSetPath(path: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('agent_set_path', { path });
+}
+
+export async function agentReset(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('agent_reset');
+}
+
+export async function agentChat(message: string, sessionId?: string): Promise<string> {
+  if (!isTauri()) {
+    return 'Dev Agent (Joren) analyzed the workspace: Code structure is verified and all modules are ready.';
+  }
+  return await invoke('agent_chat', { message, sessionId });
+}
+
+export interface CommandProposalPayload {
+  proposal_id: string;
+  session_id: string;
+  command: string;
+  working_dir: string;
+  risk_level: string;
+  expires_at: number;
+}
+
+export async function agentResolveProposal(
+  proposalId: string,
+  action: 'Approve' | 'Reject',
+  sessionId?: string
+): Promise<{ success: boolean; output: string; error?: string; execution_time_ms: number }> {
+  if (!isTauri()) {
+    return { success: true, output: `[Mock Proposal ${action}] Execution completed.`, execution_time_ms: 50 };
+  }
+  return await invoke('agent_resolve_proposal', {
+    proposalId,
+    sessionId: sessionId || null,
+    action,
+  });
+}
+
+export async function onToolProposal(callback: (proposal: CommandProposalPayload) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  try {
+    return await listen<CommandProposalPayload>('tool-proposal', (event) => {
+      callback(event.payload);
+    });
+  } catch {
+    return () => {};
+  }
+}
+
+// --- Plugins ---
+export async function getPlugins(): Promise<PluginWithState[]> {
+  if (!isTauri()) {
+    return getStoredJson<PluginWithState[]>('edith_plugins', DEFAULT_PLUGINS);
+  }
+  try {
+    const res = await invoke<PluginWithState[]>('get_plugins');
+    return res && res.length > 0 ? res : DEFAULT_PLUGINS;
+  } catch {
+    return DEFAULT_PLUGINS;
+  }
+}
+
+export async function togglePlugin(pluginId: string): Promise<boolean> {
+  const current = getStoredJson<PluginWithState[]>('edith_plugins', DEFAULT_PLUGINS);
+  let newState = true;
+  const updated = current.map((p) => {
+    if (p.id === pluginId) {
+      newState = !p.enabled;
+      return { ...p, enabled: newState };
+    }
+    return p;
+  });
+  setStoredJson('edith_plugins', updated);
+
+  if (isTauri()) {
+    try {
+      return await invoke('toggle_plugin', { pluginId });
+    } catch {
+      return newState;
+    }
+  }
+  return newState;
+}
+
+export async function getBuiltinApps(): Promise<BuiltinApp[]> {
+  if (!isTauri()) return DEFAULT_BUILTIN_APPS;
+  try {
+    const res = await invoke<BuiltinApp[]>('get_builtin_apps');
+    return res && res.length > 0 ? res : DEFAULT_BUILTIN_APPS;
+  } catch {
+    return DEFAULT_BUILTIN_APPS;
+  }
+}
+
+export async function pluginSystemTerminal(cmd: string): Promise<string> {
+  if (!isTauri()) {
+    return 'Windows PowerShell [Simulated Mode]\nCommand: ' + cmd + '\nStatus: Success\nOutput: Ready';
+  }
+  return await invoke('plugin_system_terminal', { cmd });
+}
+
+export async function pluginSystemControl(action: string): Promise<string> {
+  if (!isTauri()) return 'System control ' + action + ' executed (Simulated)';
+  return await invoke('plugin_system_control', { action });
+}
+
+export async function pluginAppLauncher(appPath: string): Promise<string> {
+  if (!isTauri()) return 'Launched ' + appPath;
+  return await invoke('plugin_app_launcher', { appPath });
+}
+
+export async function pluginWebSearch(query: string, apiKey?: string): Promise<string> {
+  if (!isTauri()) return 'Search results for: ' + query;
+  return await invoke('plugin_web_search', { query, apiKey });
+}
+
+export async function pluginMediaPlayer(query: string): Promise<string> {
+  if (!isTauri()) {
+    window.open('https://www.youtube.com/results?search_query=' + encodeURIComponent(query), '_blank');
+    return 'Playing: ' + query;
+  }
+  return await invoke('plugin_media_player', { query });
+}
+
+export async function pluginWhatsapp(number: string, message: string): Promise<string> {
+  if (!isTauri()) {
+    window.open('https://wa.me/' + number + '?text=' + encodeURIComponent(message), '_blank');
+    return 'WhatsApp opened for ' + number;
+  }
+  return await invoke('plugin_whatsapp', { number, message });
+}
+
+export async function pluginGmail(email: string, message: string): Promise<string> {
+  if (!isTauri()) {
+    window.open('mailto:' + email + '?subject=Message%20from%20Joren&body=' + encodeURIComponent(message), '_blank');
+    return 'Email opened for ' + email;
+  }
+  return await invoke('plugin_gmail', { email, message });
+}
+
+export async function takeScreenshot(): Promise<string> {
+  if (!isTauri()) return '';
+  return await invoke('take_screenshot');
+}
+
+// --- Personal Notes ---
+export async function getPersonalNotes(): Promise<Note[]> {
+  if (!isTauri()) {
+    return getStoredJson<Note[]>('edith_notes', [
+      { id: '1', content: '# Welcome to Joren Notes\n- Keep quick reminders and notes here.\n- Auto-saved to SQLite.' },
+    ]);
+  }
+  try {
+    const res = await invoke<Note[]>('get_personal_notes');
+    return res && res.length > 0 ? res : [];
+  } catch {
+    return getStoredJson<Note[]>('edith_notes', []);
+  }
+}
+
+export async function savePersonalNote(content: string): Promise<void> {
+  setStoredJson('edith_notes', [{ id: '1', content }]);
+  if (isTauri()) {
+    try {
+      await invoke('save_personal_note', { content });
+    } catch {}
+  }
+}
+
+export async function deletePersonalNote(noteId: string): Promise<void> {
+  setStoredJson('edith_notes', []);
+  if (isTauri()) {
+    try {
+      await invoke('delete_personal_note', { noteId });
+    } catch {}
+  }
+}
+
+// --- Custom Apps ---
+export async function getCustomApps(): Promise<CustomApp[]> {
+  if (!isTauri()) {
+    return getStoredJson<CustomApp[]>('edith_custom_apps', [
+      { id: 1, name: 'vscode', path: 'code', keywords: 'vscode,code,editor' },
+      { id: 2, name: 'spotify', path: 'spotify.exe', keywords: 'spotify,music,songs' },
+    ]);
+  }
+  try {
+    const res = await invoke<CustomApp[]>('get_custom_apps');
+    return res || [];
+  } catch {
+    return getStoredJson<CustomApp[]>('edith_custom_apps', []);
+  }
+}
+
+export async function addCustomApp(name: string, path: string, keywords: string): Promise<void> {
+  const current = getStoredJson<CustomApp[]>('edith_custom_apps', []);
+  current.push({ id: Date.now(), name, path, keywords });
+  setStoredJson('edith_custom_apps', current);
+  if (isTauri()) {
+    try {
+      await invoke('add_custom_app', { name, path, keywords });
+    } catch {}
+  }
+}
+
+export async function deleteCustomApp(appId: number): Promise<void> {
+  const current = getStoredJson<CustomApp[]>('edith_custom_apps', []);
+  setStoredJson(
+    'edith_custom_apps',
+    current.filter((a) => a.id !== appId)
+  );
+  if (isTauri()) {
+    try {
+      await invoke('delete_custom_app', { appId });
+    } catch {}
+  }
+}
+
+export async function launchApp(path: string): Promise<void> {
+  if (!isTauri()) {
+    console.log('Launch app simulated:', path);
+    return;
+  }
+  return await invoke('launch_app', { path });
+}
+
+// --- TTS (Text to Speech) ---
+let activeTtsAudio: HTMLAudioElement | null = null;
+
+export async function ttsSpeak(text: string, voice?: string): Promise<void> {
+  if (activeTtsAudio) {
+    try {
+      activeTtsAudio.pause();
+      activeTtsAudio.currentTime = 0;
+    } catch {}
+    activeTtsAudio = null;
+  }
+
+  if (!isTauri()) {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text.replace(/[*`_~#]/g, ''));
+      window.speechSynthesis.speak(utterance);
+    }
+    return;
+  }
+
+  try {
+    await invoke<string>('tts_speak', { text, voice });
+  } catch (err) {
+    console.warn('Tauri native TTS synthesis error, falling back to Web Speech API:', err);
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text.replace(/[*`_~#]/g, ''));
+      window.speechSynthesis.speak(utterance);
+    }
+  }
+}
+
+export async function localTtsSpeak(text: string, voice: string, modelName: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('local_tts_speak', { text, voice, modelName });
+}
+
+export async function getKokoroModels(): Promise<string[]> {
+  if (!isTauri()) return ['kokoro-v1.0.int8.onnx', 'kokoro-v1.0.fp16.onnx'];
+  try {
+    const res = await invoke<string[]>('get_kokoro_models');
+    return res && res.length > 0 ? res : ['kokoro-v1.0.int8.onnx'];
+  } catch {
+    return ['kokoro-v1.0.int8.onnx'];
+  }
+}
+
+export async function ttsStop(): Promise<void> {
+  if (activeTtsAudio) {
+    try {
+      activeTtsAudio.pause();
+      activeTtsAudio.currentTime = 0;
+    } catch {}
+    activeTtsAudio = null;
+  }
+  if ('speechSynthesis' in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+  }
+  if (isTauri()) {
+    try {
+      await invoke('tts_stop');
+    } catch {}
+  }
+}
+
+// --- Vector Memory (LanceDB) ---
+export async function saveToMemory(text: string, source: string): Promise<void> {
+  const current = getStoredJson<MemoryChunk[]>('edith_memory', []);
+  current.push({ id: 'mem_' + Date.now(), text, source, score: 0.12 });
+  setStoredJson('edith_memory', current);
+  if (isTauri()) {
+    try {
+      await invoke('save_to_memory_cmd', { text, source });
+    } catch {}
+  }
+}
+
+export async function searchMemory(query: string): Promise<MemoryChunk[]> {
+  if (!isTauri()) {
+    const current = getStoredJson<MemoryChunk[]>('edith_memory', [
+      { id: '1', text: 'Joren is an advanced desktop assistant for high-productivity workflows.', source: 'system_core', score: 0.08 },
+      { id: '2', text: 'Project built with Tauri 2, Rust backend and React frontend.', source: 'project_docs', score: 0.15 },
+    ]);
+    return current.filter((c) => c.text.toLowerCase().includes(query.toLowerCase()) || c.source.toLowerCase().includes(query.toLowerCase()));
+  }
+  try {
+    const res = await invoke<MemoryChunk[]>('search_memory_cmd', { query });
+    return res || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getMemories(): Promise<MemoryChunk[]> {
+  if (!isTauri()) {
+    return getStoredJson<MemoryChunk[]>('edith_memory', [
+      { id: '1', text: 'Joren is an advanced desktop assistant for high-productivity workflows.', source: 'system_core', score: 0.08 },
+      { id: '2', text: 'Project built with Tauri 2, Rust backend and React frontend.', source: 'project_docs', score: 0.15 },
+      { id: '3', text: 'Tactical intelligence with custom AI providers support.', source: 'chat:session_1', score: 0.22 },
+    ]);
+  }
+  try {
+    const res = await invoke<MemoryChunk[]>('get_memories_cmd');
+    return res || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function deleteMemory(source: string): Promise<void> {
+  const current = getStoredJson<MemoryChunk[]>('edith_memory', []);
+  setStoredJson('edith_memory', current.filter((c) => c.source !== source));
+  if (isTauri()) {
+    try {
+      await invoke('delete_memory_cmd', { source });
+    } catch {}
+  }
+}
+
+// --- Custom Providers & Models Fetching ---
+export async function fetchCustomModels(baseUrl: string, apiKey?: string): Promise<ProviderModel[]> {
+  if (!isTauri()) {
+    try {
+      const rawUrl = baseUrl.trim().replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+      const trimmedKey = apiKey?.trim() || '';
+      const isGemini = rawUrl.includes('generativelanguage.googleapis.com') || rawUrl === 'gemini';
+
+      let url = rawUrl;
+      const headers: Record<string, string> = {};
+
+      if (isGemini) {
+        url = trimmedKey ? `https://generativelanguage.googleapis.com/v1beta/models?key=${trimmedKey}` : 'https://generativelanguage.googleapis.com/v1beta/models';
+      } else {
+        if (!url.endsWith('/models')) {
+          url = url + '/models';
+        }
+        if (trimmedKey) {
+          headers['Authorization'] = `Bearer ${trimmedKey}`;
+        }
+      }
+
+      const res = await fetch(url, { headers });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const list = data.data || data.models || [];
+      return list
+        .filter((m: any) => {
+          if (m.supportedGenerationMethods) {
+            return m.supportedGenerationMethods.includes('generateContent');
+          }
+          return true;
+        })
+        .map((m: any) => {
+          const rawId = m.id || m.name || '';
+          const cleanId = rawId.replace(/^models\//, '');
+          return {
+            id: cleanId,
+            label: m.displayName || m.name || cleanId,
+          };
+        });
+    } catch (err: any) {
+      throw new Error(err.message || 'Failed to fetch models from endpoint');
+    }
+  }
+  return await invoke<ProviderModel[]>('fetch_custom_models', { baseUrl, apiKey: apiKey || null });
+}
+
+// --- Weather ---
+export async function getWeather(lat: number, lon: number): Promise<WeatherResult> {
+  if (!isTauri()) {
+    return { temperature: 28.5, weather_code: 1, condition: 'Clear Sky / Sunny' };
+  }
+  try {
+    return await invoke('get_weather', { lat, lon });
+  } catch {
+    return { temperature: 28.5, weather_code: 1, condition: 'Partly Cloudy' };
+  }
+}
+
+export async function getBaseDir(): Promise<string> {
+  if (!isTauri()) return '.';
+  return await invoke('get_base_dir');
+}
+
+// --- Event Subscriptions ---
+export async function onJorenEvent(callback: (envelope: EdithEventEnvelope) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  try {
+    return await listen<EdithEventEnvelope>('joren-event', (event) => {
+      callback(event.payload);
+    });
+  } catch {
+    return () => {};
+  }
+}
+
+export const onEdithEvent = onJorenEvent;
+
+export async function onChatChunk(callback: (chunk: string) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  try {
+    return await listen<string>('chat-chunk', (event) => {
+      callback(event.payload);
+    });
+  } catch {
+    return () => {};
+  }
+}
+
+export async function onModelProgress(callback: (msg: string) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  try {
+    return await listen<string>('model-progress', (event) => {
+      callback(event.payload);
+    });
+  } catch {
+    return () => {};
+  }
+}
+
+// --- Browser Webview2 Multi-Tab Controller Methods ---
+export async function browserCreateTab(tabId: string, url?: string, bounds?: BrowserViewportBounds, profileId?: string): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: tabId,
+      label: `edith_tab_${tabId}`,
+      url: url || 'https://example.com',
+      title: 'Simulated Tab',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      profile_id: profileId || 'profile_default',
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_create_tab', { tabId, url, bounds, profileId });
+}
+
+export async function browserSwitchTab(tabId: string, bounds?: BrowserViewportBounds): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: tabId,
+      label: `edith_tab_${tabId}`,
+      url: 'https://example.com',
+      title: 'Simulated Tab',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_switch_tab', { tabId, bounds });
+}
+
+export async function browserCloseTab(tabId: string): Promise<BrowserTabInfo | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserTabInfo | null>('browser_close_tab', { tabId });
+}
+
+export async function browserNavigateTab(tabId: string, url: string): Promise<string> {
+  if (!isTauri()) return url;
+  return await invoke<string>('browser_navigate_tab', { tabId, url });
+}
+
+export async function browserGoBackTab(tabId: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_go_back_tab', { tabId });
+}
+
+export async function browserGoForwardTab(tabId: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_go_forward_tab', { tabId });
+}
+
+export async function browserReloadTab(tabId: string): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_reload_tab', { tabId });
+}
+
+export async function browserGetMultiState(): Promise<BrowserMultiStateInfo> {
+  if (!isTauri()) {
+    return {
+      tabs: [],
+      active_tab_id: null,
+      is_visible: false,
+    };
+  }
+  return await invoke<BrowserMultiStateInfo>('browser_get_multi_state');
+}
+
+export async function browserSetBoundsAll(bounds: BrowserViewportBounds): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_set_bounds_all', { bounds });
+}
+
+export async function browserHideAll(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_hide_all');
+}
+
+export async function browserShowActive(bounds?: BrowserViewportBounds): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_show_active', { bounds });
+}
+
+export async function browserGetTabUrl(tabId: string): Promise<string> {
+  if (!isTauri()) return 'https://example.com';
+  return await invoke<string>('browser_get_tab_url', { tabId });
+}
+
+export async function browserGetTabTitle(tabId: string): Promise<string> {
+  if (!isTauri()) return 'Tab Title';
+  return await invoke<string>('browser_get_tab_title', { tabId });
+}
+
+export async function browserGetTabVisibleText(tabId: string): Promise<string> {
+  if (!isTauri()) {
+    return 'Sample simulated visible text content.';
+  }
+  return await invoke<string>('browser_get_tab_visible_text', { tabId });
+}
+
+export async function browserObserveTab(
+  tabId: string,
+  scope?: string
+): Promise<PageObservationSnapshot> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      url: 'https://example.com',
+      title: 'Example Domain (Simulated)',
+      generation: 1,
+      fingerprint: 'fp_simulated_01',
+      viewport: { width: 1024, height: 768, scroll_x: 0, scroll_y: 0, page_width: 1024, page_height: 768 },
+      visible_text: 'Example Domain. This domain is for use in illustrative examples in documents.',
+      selected_text: undefined,
+      regions: [
+        {
+          region_type: 'main',
+          label: 'Main Content',
+          elements_count: 5,
+        },
+      ],
+      headings: [
+        {
+          level: 1,
+          text: 'Example Domain',
+        },
+      ],
+      interactive_elements: [
+        {
+          id: 'id_more_info',
+          tag: 'a',
+          role: 'link',
+          accessible_name: 'More information...',
+          text: 'More information...',
+          href: 'https://www.iana.org/domains/example',
+          disabled: false,
+          visible: true,
+          interactable: true,
+          value_available: true,
+          bounding_box: { x: 100, y: 200, width: 150, height: 24 },
+        },
+      ],
+      forms: [],
+      links: [
+        {
+          text: 'More information...',
+          href: 'https://www.iana.org/domains/example',
+          visible: true,
+          is_external: true,
+        },
+      ],
+      timestamp: Date.now(),
+    };
+  }
+  return await invoke<PageObservationSnapshot>('browser_observe_tab', { tabId, scope });
+}
+
+export async function browserScreenshotTab(tabId: string, bounds?: BrowserViewportBounds): Promise<ScreenshotResult> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      width: 800,
+      height: 600,
+    };
+  }
+  return await invoke<ScreenshotResult>('browser_screenshot_tab', { tabId, bounds });
+}
+
+export async function browserReopenLastClosedTab(bounds?: BrowserViewportBounds): Promise<BrowserTabInfo | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserTabInfo | null>('browser_reopen_last_closed_tab', { bounds });
+}
+
+// --- Phase 4A Browser Interaction / Action Layer Methods ---
+export async function browserClickElement(tabId: string, elementId: string): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: 'click',
+      tab_id: tabId,
+      element_id: elementId,
+      page_changed: true,
+      url_changed: false,
+      resulting_url: 'https://example.com',
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_click_element', { tabId, elementId });
+}
+
+export async function browserTypeElement(
+  tabId: string,
+  elementId: string,
+  text: string,
+  clearFirst?: boolean
+): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: 'type',
+      tab_id: tabId,
+      element_id: elementId,
+      page_changed: true,
+      url_changed: false,
+      resulting_url: 'https://example.com',
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_type_element', {
+    tabId,
+    elementId,
+    text,
+    clearFirst: clearFirst ?? true,
+  });
+}
+
+export async function browserScroll(
+  tabId: string,
+  direction: string,
+  amount?: number
+): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: `scroll_${direction}`,
+      tab_id: tabId,
+      page_changed: true,
+      url_changed: false,
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_scroll', { tabId, direction, amount });
+}
+
+export async function browserPressKey(tabId: string, key: string): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: `press_key_${key}`,
+      tab_id: tabId,
+      page_changed: true,
+      url_changed: false,
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_press_key', { tabId, key });
+}
+
+export async function browserFocusElement(tabId: string, elementId: string): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: 'focus',
+      tab_id: tabId,
+      element_id: elementId,
+      page_changed: false,
+      url_changed: false,
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_focus_element', { tabId, elementId });
+}
+
+export async function browserWait(
+  tabId: string,
+  condition: string,
+  target?: string,
+  timeoutMs?: number
+): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: `wait_${condition}`,
+      tab_id: tabId,
+      element_id: target,
+      page_changed: false,
+      url_changed: false,
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_wait', { tabId, condition, target, timeoutMs });
+}
+
+export async function browserSelectOption(
+  tabId: string,
+  elementId: string,
+  value: string
+): Promise<BrowserActionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      action: 'select_option',
+      tab_id: tabId,
+      element_id: elementId,
+      page_changed: true,
+      url_changed: false,
+    };
+  }
+  return await invoke<BrowserActionResult>('browser_select_option', { tabId, elementId, value });
+}
+
+// --- Legacy Phase 1 Delegate Methods ---
+export async function browserCreate(url?: string, bounds?: BrowserViewportBounds): Promise<BrowserInfo> {
+  if (!isTauri()) {
+    return {
+      is_created: true,
+      is_visible: true,
+      current_url: url || 'https://example.com',
+      title: 'Example Domain (Simulated)',
+      bounds,
+    };
+  }
+  return await invoke<BrowserInfo>('browser_create', { url, bounds });
+}
+
+export async function browserDestroy(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_destroy');
+}
+
+export async function browserShow(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_show');
+}
+
+export async function browserHide(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_hide');
+}
+
+export async function browserNavigate(url: string): Promise<string> {
+  if (!isTauri()) return url;
+  return await invoke<string>('browser_navigate', { url });
+}
+
+export async function browserGoBack(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_go_back');
+}
+
+export async function browserGoForward(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_go_forward');
+}
+
+export async function browserReload(): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_reload');
+}
+
+export async function browserSetBounds(bounds: BrowserViewportBounds): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_set_bounds', { bounds });
+}
+
+export async function browserGetUrl(): Promise<string> {
+  if (!isTauri()) return 'https://example.com';
+  return await invoke<string>('browser_get_url');
+}
+
+export async function browserGetTitle(): Promise<string> {
+  if (!isTauri()) return 'Example Domain';
+  return await invoke<string>('browser_get_title');
+}
+
+export async function browserGetVisibleText(): Promise<string> {
+  if (!isTauri()) {
+    return 'Example Domain. This domain is for use in illustrative examples in documents.';
+  }
+  return await invoke<string>('browser_get_visible_text');
+}
+
+// --- Phase 4B AI Browser Tool Integration APIs ---
+export async function browserGetToolDefinitions(): Promise<BrowserToolDefinition[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return await invoke<BrowserToolDefinition[]>('browser_get_tool_definitions_cmd');
+}
+
+export async function browserExecuteTool(
+  toolName: string,
+  argumentsObj: Record<string, any>
+): Promise<BrowserToolExecutionResult> {
+  if (!isTauri()) {
+    return {
+      success: true,
+      tool_name: toolName,
+      data: { simulated: true },
+      duration_ms: 1,
+    };
+  }
+  return await invoke<BrowserToolExecutionResult>('browser_execute_tool_cmd', {
+    toolName,
+    arguments: argumentsObj,
+  });
+}
+
+// --- Phase 4C Autonomous Browser Agent APIs ---
+export async function browserAgentRunTask(
+  goal: string,
+  maxSteps?: number,
+  timeoutMs?: number
+): Promise<BrowserTaskResult> {
+  if (!isTauri()) {
+    return {
+      task_id: 'sim_task',
+      status: 'Completed',
+      goal,
+      summary: 'Simulated task execution in non-Tauri mode.',
+      steps_taken: 1,
+      duration_ms: 100,
+      final_tab_id: 'tab_a',
+    };
+  }
+  return await invoke<BrowserTaskResult>('browser_agent_run_task', {
+    goal,
+    maxSteps,
+    timeoutMs,
+  });
+}
+
+export async function browserAgentCancelTask(taskId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_agent_cancel_task', { taskId });
+}
+
+export async function browserAgentGetCurrentTask(): Promise<BrowserTaskState | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserTaskState | null>('browser_agent_get_current_task');
+}
+
+// --- Phase 5.3 Browser Action Risk & Safety Engine APIs ---
+export async function browserAssessActionRisk(
+  context: BrowserActionContext
+): Promise<BrowserRiskAssessment> {
+  if (!isTauri()) {
+    return {
+      risk_level: 'LOW',
+      decision: 'ALLOW',
+      policy_code: 'SAFE_INTERACTION',
+      reason: 'Simulated assessment in web preview mode.',
+      user_explanation: 'Action permitted.',
+    };
+  }
+  return await invoke<BrowserRiskAssessment>('browser_assess_action_risk', { context });
+}
+
+export async function browserGetRiskAuditLog(): Promise<BrowserRiskAuditEntry[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserRiskAuditEntry[]>('browser_get_risk_audit_log');
+}
+
+export async function browserResolveActionApproval(
+  approvalId: string,
+  decision: string
+): Promise<PendingBrowserActionApproval> {
+  if (!isTauri()) {
+    return {
+      approval_id: approvalId,
+      context: { tool_name: 'browser_click', tab_id: 'tab_a' },
+      assessment: {
+        risk_level: 'HIGH',
+        decision: 'REQUIRE_APPROVAL',
+        policy_code: 'DESTRUCTIVE_ACTION',
+        reason: 'Simulated',
+        user_explanation: 'Simulated approval resolution.',
+      },
+      created_at: Date.now(),
+      status: decision,
+    };
+  }
+  return await invoke<PendingBrowserActionApproval>('browser_resolve_action_approval', {
+    approvalId,
+    decision,
+  });
+}
+
+// --- Phase 5.4 Autonomous Multi-Tab Task Orchestration APIs ---
+export async function browserOrchestratorRunTask(
+  goal: string,
+  subtaskGoals?: string[],
+  globalMaxSteps?: number,
+  timeoutMs?: number
+): Promise<BrowserOrchestrationResult> {
+  if (!isTauri()) {
+    return {
+      orchestration_id: 'sim_orch_1',
+      status: 'COMPLETED',
+      goal,
+      subtask_results: [
+        {
+          work_id: 'work_1',
+          tab_id: 'tab_a',
+          status: 'COMPLETED',
+          summary: 'Simulated subtask 1 completed.',
+          evidence: ['Title: Simulated'],
+          steps_taken: 1,
+          started_at: Date.now() - 50,
+          completed_at: Date.now(),
+          duration_ms: 50,
+        },
+      ],
+      combined_summary: 'Master Goal completed in simulated environment.',
+      completed_count: 1,
+      failed_count: 0,
+      duration_ms: 100,
+    };
+  }
+  return await invoke<BrowserOrchestrationResult>('browser_orchestrator_run_task', {
+    goal,
+    subtaskGoals,
+    globalMaxSteps,
+    timeoutMs,
+  });
+}
+
+export async function browserOrchestratorCancelTask(orchestrationId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_orchestrator_cancel_task', { orchestrationId });
+}
+
+export async function browserOrchestratorGetCurrentTask(): Promise<BrowserOrchestrationTask | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserOrchestrationTask | null>('browser_orchestrator_get_current_task');
+}
+
+// --- Phase 5.5 Human <-> AI Browser Control / Takeover APIs ---
+export async function browserRequestAiControl(tabId: string, taskId?: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'AI_CONTROLLED',
+      last_transition: Date.now(),
+      ai_task_id: taskId,
+      reason: 'Simulated AI control',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_request_ai_control', { tabId, taskId });
+}
+
+export async function browserTakeoverTab(tabId: string, reason?: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'USER_CONTROLLED',
+      last_transition: Date.now(),
+      ai_task_id: undefined,
+      reason: reason || 'Simulated human takeover',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_takeover_tab', { tabId, reason });
+}
+
+export async function browserReleaseAiControl(tabId: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'USER_CONTROLLED',
+      last_transition: Date.now(),
+      ai_task_id: undefined,
+      reason: 'Simulated AI release',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_release_ai_control', { tabId });
+}
+
+export async function browserPauseAiControl(tabId: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'AI_PAUSED',
+      last_transition: Date.now(),
+      ai_task_id: undefined,
+      reason: 'Simulated AI pause',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_pause_ai_control', { tabId });
+}
+
+export async function browserResumeAiControl(tabId: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'AI_CONTROLLED',
+      last_transition: Date.now(),
+      ai_task_id: undefined,
+      reason: 'Simulated AI resume',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_resume_ai_control', { tabId });
+}
+
+export async function browserGetTabControlInfo(tabId: string): Promise<TabControlInfo> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      control_state: 'USER_CONTROLLED',
+      last_transition: Date.now(),
+      ai_task_id: undefined,
+      reason: 'Default user control',
+    };
+  }
+  return await invoke<TabControlInfo>('browser_get_tab_control_info', { tabId });
+}
+
+export async function browserGetAllTabControls(): Promise<TabControlInfo[]> {
+  if (!isTauri()) return [];
+  return await invoke<TabControlInfo[]>('browser_get_all_tab_controls');
+}
+
+// --- Phase 5.6A Browser History & Bookmarks APIs ---
+export async function browserHistoryAdd(
+  url: string,
+  title: string,
+  tabId?: string
+): Promise<BrowserHistoryEntry> {
+  if (!isTauri()) {
+    return {
+      id: 'mock-' + Date.now(),
+      url,
+      title: title || url,
+      visited_at: Date.now(),
+      tab_id: tabId,
+      visit_count: 1,
+      last_visited_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserHistoryEntry>('browser_history_add', { url, title, tabId });
+}
+
+export async function browserHistoryGetRecent(limit?: number): Promise<BrowserHistoryEntry[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserHistoryEntry[]>('browser_history_get_recent', { limit });
+}
+
+export async function browserHistorySearch(query: string, limit?: number): Promise<BrowserHistoryEntry[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserHistoryEntry[]>('browser_history_search', { query, limit });
+}
+
+export async function browserHistoryDelete(id: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_history_delete', { id });
+}
+
+export async function browserHistoryClear(): Promise<number> {
+  if (!isTauri()) return 0;
+  return await invoke<number>('browser_history_clear');
+}
+
+export async function browserBookmarkAdd(
+  title: string,
+  url: string,
+  folderId?: string,
+  favicon?: string
+): Promise<BrowserBookmark> {
+  if (!isTauri()) {
+    return {
+      id: 'bm-' + Date.now(),
+      title,
+      url,
+      folder_id: folderId,
+      favicon,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserBookmark>('browser_bookmark_add', { title, url, folderId, favicon });
+}
+
+export async function browserBookmarkUpdate(
+  id: string,
+  title: string,
+  url: string,
+  folderId?: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_bookmark_update', { id, title, url, folderId });
+}
+
+export async function browserBookmarkDelete(id: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_bookmark_delete', { id });
+}
+
+export async function browserBookmarksList(): Promise<BrowserBookmark[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserBookmark[]>('browser_bookmarks_list');
+}
+
+export async function browserBookmarksSearch(query: string): Promise<BrowserBookmark[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserBookmark[]>('browser_bookmarks_search', { query });
+}
+
+export async function browserBookmarkIsBookmarked(url: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return await invoke<boolean>('browser_bookmark_is_bookmarked', { url });
+}
+
+export async function browserBookmarkCreateFolder(name: string, parentId?: string): Promise<BrowserBookmarkFolder> {
+  if (!isTauri()) {
+    return {
+      id: 'folder-' + Date.now(),
+      name,
+      parent_id: parentId,
+      created_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserBookmarkFolder>('browser_bookmark_create_folder', { name, parentId });
+}
+
+export async function browserBookmarkDeleteFolder(folderId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_bookmark_delete_folder', { folderId });
+}
+
+// --- Phase 5.6B Browser Download Manager Tauri Methods ---
+export async function browserDownloadStart(
+  url: string,
+  tabId?: string,
+  suggestedFilename?: string
+): Promise<BrowserDownload> {
+  if (!isTauri()) {
+    return {
+      id: 'mock-dl-' + Date.now(),
+      url,
+      filename: suggestedFilename || 'mock_file.bin',
+      suggested_filename: suggestedFilename || 'mock_file.bin',
+      destination: '/mock/downloads/' + (suggestedFilename || 'mock_file.bin'),
+      received_bytes: 0,
+      progress: 0,
+      status: 'DOWNLOADING',
+      started_at: Date.now(),
+      tab_id: tabId,
+    };
+  }
+  return await invoke<BrowserDownload>('browser_download_start', {
+    url,
+    tabId,
+    suggestedFilename,
+  });
+}
+
+export async function browserDownloadCancel(downloadId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_download_cancel', { downloadId });
+}
+
+export async function browserDownloadList(limit?: number): Promise<BrowserDownload[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserDownload[]>('browser_download_list', { limit });
+}
+
+export async function browserDownloadGet(downloadId: string): Promise<BrowserDownload | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserDownload | null>('browser_download_get', { downloadId });
+}
+
+export async function browserDownloadDeleteRecord(downloadId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_download_delete_record', { downloadId });
+}
+
+export async function browserDownloadClearRecords(): Promise<number> {
+  if (!isTauri()) return 0;
+  return await invoke<number>('browser_download_clear_records');
+}
+
+export async function browserDownloadShowInFolder(downloadId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_download_show_in_folder', { downloadId });
+}
+
+export async function browserDownloadOpenFile(downloadId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_download_open_file', { downloadId });
+}
+
+// --- Phase 5.6C: Browser Profile Manager Methods ---
+export async function browserProfilesList(): Promise<BrowserProfile[]> {
+  if (!isTauri()) {
+    return [
+      {
+        id: 'profile_default',
+        name: 'Default Profile',
+        profile_type: 'DEFAULT',
+        user_data_dir: 'profiles/profile_default',
+        created_at: 1700000000000,
+        updated_at: 1700000000000,
+        is_default: true,
+        is_active: true,
+      },
+    ];
+  }
+  return await invoke<BrowserProfile[]>('browser_profiles_list');
+}
+
+export async function browserProfileGet(profileId: string): Promise<BrowserProfile | null> {
+  if (!isTauri()) return null;
+  return await invoke<BrowserProfile | null>('browser_profile_get', { profileId });
+}
+
+export async function browserProfileCreate(name: string, profileType?: string): Promise<BrowserProfile> {
+  if (!isTauri()) {
+    return {
+      id: `profile_${Date.now()}`,
+      name,
+      profile_type: (profileType as any) || 'USER',
+      user_data_dir: `profiles/profile_${Date.now()}`,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      is_default: false,
+      is_active: false,
+    };
+  }
+  return await invoke<BrowserProfile>('browser_profile_create', { name, profileType });
+}
+
+export async function browserProfileSwitch(profileId: string): Promise<BrowserProfile> {
+  if (!isTauri()) {
+    return {
+      id: profileId,
+      name: 'Switched Profile',
+      profile_type: 'USER',
+      user_data_dir: `profiles/${profileId}`,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      is_default: profileId === 'profile_default',
+      is_active: true,
+    };
+  }
+  return await invoke<BrowserProfile>('browser_profile_switch', { profileId });
+}
+
+export async function browserProfileRename(profileId: string, newName: string): Promise<BrowserProfile> {
+  if (!isTauri()) {
+    return {
+      id: profileId,
+      name: newName,
+      profile_type: 'USER',
+      user_data_dir: `profiles/${profileId}`,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      is_default: profileId === 'profile_default',
+      is_active: true,
+    };
+  }
+  return await invoke<BrowserProfile>('browser_profile_rename', { profileId, newName });
+}
+
+export async function browserProfileDelete(profileId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_profile_delete', { profileId });
+}
+
+export async function browserProfileCreateTemporary(taskId: string): Promise<BrowserProfile> {
+  if (!isTauri()) {
+    return {
+      id: `agent_${taskId}`,
+      name: `AI Task ${taskId}`,
+      profile_type: 'AGENT_TEMPORARY',
+      user_data_dir: `temporary/agent_${taskId}`,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      is_default: false,
+      is_active: false,
+    };
+  }
+  return await invoke<BrowserProfile>('browser_profile_create_temporary', { taskId });
+}
+
+export async function browserProfileCleanupTemporary(profileId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_profile_cleanup_temporary', { profileId });
+}
+
+// ============================================================================
+// Phase 5.6D: Tab UX, Pinning, Duplication, Session Restore Invocations
+// ============================================================================
+
+export async function browserDuplicateTab(tabId: string, bounds?: BrowserViewportBounds): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: `tab_${Date.now()}`,
+      label: `tab_${Date.now()}`,
+      url: 'https://example.com',
+      title: 'Duplicated Tab',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      is_pinned: false,
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_duplicate_tab', { tabId, bounds });
+}
+
+export async function browserTogglePinTab(tabId: string): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: tabId,
+      label: tabId,
+      url: 'https://example.com',
+      title: 'Pinned Tab',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      is_pinned: true,
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_toggle_pin_tab', { tabId });
+}
+
+export async function browserCloseOtherTabs(tabId: string): Promise<string[]> {
+  if (!isTauri()) return [];
+  return await invoke<string[]>('browser_close_other_tabs', { tabId });
+}
+
+export async function browserCloseTabsToRight(tabId: string): Promise<string[]> {
+  if (!isTauri()) return [];
+  return await invoke<string[]>('browser_close_tabs_to_right', { tabId });
+}
+
+export async function browserSaveSession(): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_save_session');
+}
+
+export async function browserRestoreSession(bounds?: BrowserViewportBounds): Promise<BrowserTabInfo[]> {
+  if (!isTauri()) return [];
+  return await invoke<BrowserTabInfo[]>('browser_restore_session', { bounds });
+}
+
+export async function browserRunStartupRecovery(): Promise<RecoveryReport> {
+  if (!isTauri()) {
+    return {
+      recovered_tabs: 0,
+      skipped_tabs: 0,
+      repaired_groups: 0,
+      invalidated_approvals: 0,
+      interrupted_downloads: 0,
+      interrupted_agent_tasks: 0,
+      profile_issues: [],
+      database_issues: [],
+      recovery_time_ms: 2,
+      notice: null,
+    };
+  }
+  return await invoke<RecoveryReport>('browser_run_startup_recovery');
+}
+
+// --- Phase 5.6E Privacy & Content Blocking IPC ---
+
+export async function browserPrivacyGetStatus(
+  tabId?: string,
+  profileId?: string
+): Promise<PrivacyStatus> {
+  if (!isTauri()) {
+    return {
+      enabled: true,
+      block_ads: true,
+      block_trackers: true,
+      send_dnt: true,
+      send_gpc: true,
+      total_rules_loaded: 48,
+      allowlisted_domains: [],
+      tab_stats: tabId
+        ? {
+            tab_id: tabId,
+            blocked_ads: 0,
+            blocked_trackers: 0,
+            blocked_total: 0,
+            current_origin: '',
+            is_site_allowlisted: false,
+          }
+        : undefined,
+    };
+  }
+  return await invoke<PrivacyStatus>('browser_privacy_get_status', {
+    tabId,
+    profileId,
+  });
+}
+
+export async function browserPrivacyToggleProtection(
+  enabled: boolean,
+  profileId?: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_privacy_toggle_protection', {
+    enabled,
+    profileId,
+  });
+}
+
+export async function browserPrivacyAllowlistDomain(
+  domain: string,
+  profileId?: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_privacy_allowlist_domain', {
+    domain,
+    profileId,
+  });
+}
+
+export async function browserPrivacyRemoveAllowlist(
+  domain: string,
+  profileId?: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_privacy_remove_allowlist', {
+    domain,
+    profileId,
+  });
+}
+
+export async function browserPrivacyAddBlockRule(
+  pattern: string,
+  ruleType?: string,
+  category?: string,
+  profileId?: string
+): Promise<string> {
+  if (!isTauri()) return 'mock_rule_' + Date.now();
+  return await invoke<string>('browser_privacy_add_block_rule', {
+    pattern,
+    ruleType,
+    category,
+    profileId,
+  });
+}
+
+export async function browserPrivacyRemoveBlockRule(
+  ruleId: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_privacy_remove_block_rule', {
+    ruleId,
+  });
+}
+
+export async function browserPrivacyListRules(
+  profileId?: string
+): Promise<PrivacyRule[]> {
+  if (!isTauri()) return [];
+  return await invoke<PrivacyRule[]>('browser_privacy_list_rules', {
+    profileId,
+  });
+}
+
+export async function browserPrivacyGetTabStats(
+  tabId: string
+): Promise<TabPrivacyStats> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      blocked_ads: 0,
+      blocked_trackers: 0,
+      blocked_total: 0,
+      current_origin: '',
+      is_site_allowlisted: false,
+    };
+  }
+  return await invoke<TabPrivacyStats>('browser_privacy_get_tab_stats', {
+    tabId,
+  });
+}
+
+export async function browserPrivacyResetStats(
+  tabId: string
+): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_privacy_reset_stats', { tabId });
+}
+
+// --- Phase 5.6F-A Advanced Browser Utilities IPC ---
+
+export async function browserFindInPage(
+  tabId: string,
+  query: string,
+  forward?: boolean,
+  caseSensitive?: boolean
+): Promise<FindResult> {
+  if (!isTauri()) {
+    return {
+      query,
+      match_found: !!query,
+      matches_count: query ? 1 : 0,
+      active_match_ordinal: query ? 1 : 0,
+    };
+  }
+  return await invoke<FindResult>('browser_find_in_page', {
+    tabId,
+    query,
+    forward,
+    caseSensitive,
+  });
+}
+
+export async function browserClearFind(tabId: string): Promise<boolean> {
+  if (!isTauri()) return true;
+  return await invoke<boolean>('browser_clear_find', { tabId });
+}
+
+export async function browserZoomSet(
+  tabId: string,
+  level: number
+): Promise<number> {
+  if (!isTauri()) return level;
+  return await invoke<number>('browser_zoom_set', { tabId, level });
+}
+
+export async function browserZoomIn(tabId: string): Promise<number> {
+  if (!isTauri()) return 1.1;
+  return await invoke<number>('browser_zoom_in', { tabId });
+}
+
+export async function browserZoomOut(tabId: string): Promise<number> {
+  if (!isTauri()) return 0.9;
+  return await invoke<number>('browser_zoom_out', { tabId });
+}
+
+export async function browserZoomReset(tabId: string): Promise<number> {
+  if (!isTauri()) return 1.0;
+  return await invoke<number>('browser_zoom_reset', { tabId });
+}
+
+export async function browserPrintTab(tabId: string): Promise<boolean> {
+  if (!isTauri()) {
+    window.print();
+    return true;
+  }
+  return await invoke<boolean>('browser_print_tab', { tabId });
+}
+
+export async function browserOpenLinkTab(
+  url: string,
+  sourceTabId?: string,
+  bounds?: BrowserViewportBounds
+): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: `tab_${Date.now()}`,
+      label: 'tab_link',
+      url,
+      title: url,
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      zoom_level: 1.0,
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_open_link_tab', {
+    url,
+    sourceTabId,
+    bounds,
+  });
+}
+
+// --- Phase 5.6F-B: Save Page + PDF + Reader Mode ---
+
+export async function browserSavePageHtml(tabId: string, customFilename?: string): Promise<string> {
+  if (!isTauri()) {
+    return 'C:\\Users\\User\\Downloads\\mock_saved_page.html';
+  }
+  return await invoke<string>('browser_save_page_html', { tabId, customFilename });
+}
+
+export async function browserReaderExtract(tabId: string): Promise<ReaderDocument> {
+  if (!isTauri()) {
+    return {
+      tab_id: tabId,
+      url: 'https://example.com',
+      title: 'Mock Reader Article',
+      byline: 'Joren Intelligence',
+      published_time: new Date().toLocaleDateString(),
+      excerpt: 'Extracted mock reader document content.',
+      content_html: '<p>This is a simulated reader view article extracted cleanly without external scripts.</p>',
+      text_content: 'This is a simulated reader view article extracted cleanly without external scripts.',
+      word_count: 14,
+      reading_time_minutes: 1,
+      images: [],
+      extracted_at: Date.now(),
+    };
+  }
+  return await invoke<ReaderDocument>('browser_reader_extract', { tabId });
+}
+
+export async function browserReaderModeEnter(tabId: string): Promise<ReaderDocument> {
+  if (!isTauri()) {
+    return browserReaderExtract(tabId);
+  }
+  return await invoke<ReaderDocument>('browser_reader_mode_enter', { tabId });
+}
+
+export async function browserReaderModeExit(tabId: string): Promise<boolean> {
+  if (!isTauri()) {
+    return true;
+  }
+  return await invoke<boolean>('browser_reader_mode_exit', { tabId });
+}
+
+export async function browserReaderModeGet(tabId: string): Promise<ReaderDocument | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<ReaderDocument | null>('browser_reader_mode_get', { tabId });
+}
+
+// --- Phase 5.6F-C: Tab Groups & Advanced Tab Management ---
+
+export async function browserTabGroupCreate(
+  name: string,
+  profileId?: string,
+  color?: string
+): Promise<BrowserTabGroup> {
+  if (!isTauri()) {
+    return {
+      id: `group_${Date.now()}`,
+      profile_id: profileId || 'profile_default',
+      name,
+      color: color || 'blue',
+      is_collapsed: false,
+      position: 0,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserTabGroup>('browser_tab_group_create', { name, profileId, color });
+}
+
+export async function browserTabGroupRename(
+  groupId: string,
+  name: string,
+  color?: string
+): Promise<BrowserTabGroup> {
+  if (!isTauri()) {
+    return {
+      id: groupId,
+      profile_id: 'profile_default',
+      name,
+      color: color || 'blue',
+      is_collapsed: false,
+      position: 0,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+  }
+  return await invoke<BrowserTabGroup>('browser_tab_group_rename', { groupId, name, color });
+}
+
+export async function browserTabGroupDelete(groupId: string): Promise<boolean> {
+  if (!isTauri()) {
+    return true;
+  }
+  return await invoke<boolean>('browser_tab_group_delete', { groupId });
+}
+
+export async function browserTabGroupList(profileId?: string): Promise<BrowserTabGroup[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return await invoke<BrowserTabGroup[]>('browser_tab_group_list', { profileId });
+}
+
+export async function browserTabGroupSetCollapsed(
+  groupId: string,
+  isCollapsed: boolean
+): Promise<boolean> {
+  if (!isTauri()) {
+    return true;
+  }
+  return await invoke<boolean>('browser_tab_group_set_collapsed', { groupId, isCollapsed });
+}
+
+export async function browserTabGroupMoveTab(
+  tabId: string,
+  groupId: string
+): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: tabId,
+      label: 'tab_sim',
+      url: 'https://example.com',
+      title: 'Example',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      group_id: groupId,
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_tab_group_move_tab', { tabId, groupId });
+}
+
+export async function browserTabGroupRemoveTab(tabId: string): Promise<BrowserTabInfo> {
+  if (!isTauri()) {
+    return {
+      id: tabId,
+      label: 'tab_sim',
+      url: 'https://example.com',
+      title: 'Example',
+      is_active: true,
+      is_loading: false,
+      can_go_back: false,
+      can_go_forward: false,
+      created_at: Date.now(),
+      group_id: null,
+    };
+  }
+  return await invoke<BrowserTabInfo>('browser_tab_group_remove_tab', { tabId });
+}
+
+export async function browserTabGroupReorder(groupIds: string[]): Promise<boolean> {
+  if (!isTauri()) {
+    return true;
+  }
+  return await invoke<boolean>('browser_tab_group_reorder', { groupIds });
+}
+
+export async function browserTabGroupCloseTabs(groupId: string): Promise<string[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return await invoke<string[]>('browser_tab_group_close_tabs', { groupId });
+}
+
+// --- Phase 8 Runtime State & Self-Knowledge APIs ---
+
+export interface RuntimeStatusSummary {
+  session_id?: string | null;
+  active_turn_id?: string | null;
+  autonomy_state: string;
+  security_mode: string;
+  policy_version?: number;
+  active_task_count?: number;
+  active_tasks_count?: number;
+  active_execution_count?: number;
+  active_tool_executions_count?: number;
+  pending_approval_count?: number;
+  active_provider?: string;
+  active_model?: string;
+  uptime_seconds: number;
+  voice?: {
+    state?: string;
+    active_session_id?: string | null;
+    is_speaking?: boolean;
+    is_listening?: boolean;
+    current_input_device?: string | null;
+    current_output_device?: string | null;
+  } | null;
+  timestamp?: string;
+  has_active_turns?: boolean;
+  active_turn_ids?: string[];
+}
+
+export interface ToolDomainSummary {
+  domain: string;
+  count: number;
+  tools: string[];
+}
+
+export interface CapabilitiesSummary {
+  domains: ToolDomainSummary[];
+  total_tools: number;
+  providers_available: string[];
+  active_provider: string | null;
+  policy_mode: string;
+  supports_browser_control: boolean;
+  supports_computer_control: boolean;
+  supports_self_inspection: boolean;
+}
+
+export async function runtimeGetStatus(): Promise<RuntimeStatusSummary | null> {
+  if (!isTauri()) {
+    return {
+      autonomy_state: 'idle',
+      active_tasks_count: 0,
+      active_tool_executions_count: 0,
+      has_active_turns: false,
+      active_turn_ids: [],
+      security_mode: 'Standard',
+      uptime_seconds: 42,
+      timestamp: new Date().toISOString(),
+    };
+  }
+  try {
+    return await invoke<RuntimeStatusSummary>('runtime_get_status');
+  } catch (err) {
+    console.error('Failed to get runtime status:', err);
+    return null;
+  }
+}
+
+export interface TaskSnapshot {
+  task_id: string;
+  task_type: string;
+  owner: string;
+  goal: string;
+  status: string;
+  progress: {
+    step: number;
+    max_steps: number;
+    status_text: string;
+  };
+  created_at_ms: number;
+  started_at_ms?: number | null;
+  completed_at_ms?: number | null;
+  error?: string | null;
+  result_summary?: string | null;
+}
+
+export async function taskListActive(): Promise<TaskSnapshot[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  try {
+    return await invoke<TaskSnapshot[]>('task_list_active');
+  } catch (err) {
+    console.error('Failed to list active tasks:', err);
+    return [];
+  }
+}
+
+export async function runtimeGetCapabilities(): Promise<CapabilitiesSummary | null> {
+  if (!isTauri()) {
+    return {
+      domains: [
+        { domain: 'edith', count: 11, tools: ['edith.get_status', 'edith.get_capabilities'] },
+      ],
+      total_tools: 11,
+      providers_available: ['simulated'],
+      active_provider: 'simulated',
+      policy_mode: 'Standard',
+      supports_browser_control: true,
+      supports_computer_control: true,
+      supports_self_inspection: true,
+    };
+  }
+  try {
+    return await invoke<CapabilitiesSummary>('runtime_get_capabilities');
+  } catch (err) {
+    console.error('Failed to get runtime capabilities:', err);
+    return null;
+  }
+}
+
+export interface AudioDeviceInfo {
+  id: string;
+  opaque_id: string;
+  name: string;
+  is_default: boolean;
+  sample_rates: number[];
+  channels: number;
+}
+
+export interface AudioDevicesSummary {
+  input_devices: AudioDeviceInfo[];
+  output_devices: AudioDeviceInfo[];
+  active_input_id?: string;
+  active_output_id?: string;
+}
+
+export interface DuplexVoiceState {
+  session: 'disabled' | 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'fallback' | 'error';
+  input: 'inactive' | 'listening_ambient' | 'user_speaking' | 'muted';
+  output: 'silent' | 'assistant_speaking' | 'interrupted_ducking';
+  processing: 'idle' | 'model_inferring' | 'model_streaming' | 'tool_executing';
+  active_turn_id?: string;
+  generation_id: number;
+}
+
+export interface VoiceStatusSummary {
+  is_active: boolean;
+  mode?: string;
+  state: string;
+  session_id?: string;
+  active_turn_id?: string;
+  stt_provider: string;
+  tts_provider: string;
+  realtime_provider?: string;
+  transport_type?: string;
+  reconnect_attempt?: number;
+  is_muted: boolean;
+  last_error?: string;
+  duplex_state?: DuplexVoiceState;
+  active_input_device_id?: string;
+  active_output_device_id?: string;
+  active_input_device_name?: string;
+  active_output_device_name?: string;
+}
+
+export async function voiceSessionStart(conversationId: string): Promise<string> {
+  if (!isTauri()) {
+    return 'browser-voice-session-' + Date.now();
+  }
+  return await invoke<string>('voice_session_start', { conversationId });
+}
+
+export async function voiceSessionSubmitTranscript(
+  sessionId: string,
+  transcript: string,
+  confidence?: number,
+  language?: string,
+  providerId?: string,
+  modelId?: string,
+  appSettings?: Record<string, any>
+): Promise<string> {
+  if (!isTauri()) {
+    return 'Browser simulated response for voice transcript: ' + transcript;
+  }
+  return await invoke<string>('voice_session_submit_transcript', {
+    sessionId,
+    transcript,
+    confidence,
+    language,
+    providerId,
+    modelId,
+    appSettings,
+  });
+}
+
+export async function voiceSessionCancel(sessionId: string, reason?: string): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invoke('voice_session_cancel', { sessionId, reason });
+  } catch (e) {
+    console.warn('Failed to cancel voice session:', e);
+  }
+}
+
+export async function voiceStopPlayback(): Promise<void> {
+  if (!isTauri()) {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    return;
+  }
+  try {
+    await invoke('voice_stop_playback');
+  } catch (e) {
+    console.warn('Failed to stop voice playback:', e);
+  }
+}
+
+export async function voiceGetStatus(): Promise<VoiceStatusSummary | null> {
+  if (!isTauri()) {
+    return {
+      is_active: false,
+      mode: 'fallback',
+      state: 'idle',
+      stt_provider: 'browser-speech-api',
+      tts_provider: 'browser-speech-synthesis',
+      is_muted: false,
+    };
+  }
+  try {
+    return await invoke<VoiceStatusSummary>('voice_get_status');
+  } catch (e) {
+    console.warn('Failed to get voice status:', e);
+    return null;
+  }
+}
+
+export async function realtimeVoiceStart(
+  conversationId: string,
+  providerId?: string
+): Promise<string> {
+  if (!isTauri()) {
+    return 'browser-realtime-session-' + Date.now();
+  }
+  return await invoke<string>('realtime_voice_start', {
+    conversationId,
+    providerId,
+  });
+}
+
+export async function realtimeVoiceStop(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invoke('realtime_voice_stop');
+  } catch (e) {
+    console.warn('Failed to stop realtime voice:', e);
+  }
+}
+
+export async function realtimeVoiceGetStatus(): Promise<VoiceStatusSummary | null> {
+  if (!isTauri()) {
+    return {
+      is_active: false,
+      mode: 'realtime',
+      state: 'idle',
+      stt_provider: 'realtime_audio',
+      tts_provider: 'gemini-live',
+      is_muted: false,
+    };
+  }
+  try {
+    return await invoke<VoiceStatusSummary>('realtime_voice_get_status');
+  } catch (e) {
+    console.warn('Failed to get realtime voice status:', e);
+    return null;
+  }
+}
+
+export async function voiceListDevices(): Promise<AudioDevicesSummary> {
+  if (!isTauri()) {
+    return {
+      input_devices: [
+        {
+          id: 'in_mock_default',
+          opaque_id: 'in_mock_default',
+          name: 'Default Microphone (Browser)',
+          is_default: true,
+          sample_rates: [16000, 48000],
+          channels: 1,
+        },
+      ],
+      output_devices: [
+        {
+          id: 'out_mock_default',
+          opaque_id: 'out_mock_default',
+          name: 'Default Speakers (Browser)',
+          is_default: true,
+          sample_rates: [24000, 48000],
+          channels: 2,
+        },
+      ],
+      active_input_id: 'in_mock_default',
+      active_output_id: 'out_mock_default',
+    };
+  }
+  return await invoke<AudioDevicesSummary>('voice_list_devices');
+}
+
+export async function voiceSetInputDevice(deviceId?: string | null): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('voice_set_input_device', { deviceId: deviceId || null });
+}
+
+export async function voiceSetOutputDevice(deviceId?: string | null): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('voice_set_output_device', { deviceId: deviceId || null });
+}
+
+export async function voiceGetDeviceStatus(): Promise<AudioDevicesSummary> {
+  if (!isTauri()) {
+    return voiceListDevices();
+  }
+  return await invoke<AudioDevicesSummary>('voice_get_device_status');
+}
