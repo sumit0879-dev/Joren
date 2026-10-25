@@ -192,7 +192,7 @@ jobs:
           Write-Host "Compiled NSIS installer: staging/joren-setup-x64.exe"
 
           # 3. Generate SHA256 checksums
-          Get-FileHash -Algorithm SHA256 (Get-ChildItem -Path staging -Include *.zip,*.exe -File) | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
+          Get-ChildItem -Path "staging" | Where-Object { $_.Extension -in '.zip', '.exe' } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
           Write-Host "Generated SHA256 checksums:"
           Get-Content staging\SHA256.txt
 
@@ -200,6 +200,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: joren-windows-x64-build
-          path: staging/*
+          path: |
+            staging/*.zip
+            staging/*.exe
+            staging/SHA256.txt
           retention-days: 14
           if-no-files-found: error
