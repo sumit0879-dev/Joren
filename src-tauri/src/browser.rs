@@ -556,6 +556,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
 
                 // Tag element with identifier for direct action execution
                 try {
+                    el.setAttribute('data-joren-eid', elementId);
                     el.setAttribute('data-edith-eid', elementId);
                 } catch(e) {}
 
@@ -715,7 +716,7 @@ pub async fn browser_create_tab(
             let s = nav_url.as_str();
 
             // Intercept internal find results from bridge iframe
-            if s.starts_with("edith-find:") {
+            if s.starts_with("joren-find:") || s.starts_with("edith-find:") {
                 if let Some(query_str) = nav_url.query() {
                     for pair in query_str.split('&') {
                         if let Some((k, v)) = pair.split_once('=') {
@@ -768,7 +769,7 @@ pub async fn browser_create_tab(
             }
 
             // Intercept internal reader extraction results from bridge iframe
-            if s.starts_with("edith-reader:") {
+            if s.starts_with("joren-reader:") || s.starts_with("edith-reader:") {
                 if let Some(query_str) = nav_url.query() {
                     for pair in query_str.split('&') {
                         if let Some((k, v)) = pair.split_once('=') {
@@ -1876,7 +1877,8 @@ pub async fn browser_click_element(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
 
@@ -1982,7 +1984,8 @@ pub async fn browser_type_element(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
 
@@ -2198,7 +2201,8 @@ pub async fn browser_focus_element(
     let focus_script = format!(
         r#"
     (function() {{
-        var target = document.querySelector('[data-edith-eid="{}"]')
+        var target = document.querySelector('[data-joren-eid="{}"]')
+                  || document.querySelector('[data-edith-eid="{}"]')
                   || (document.getElementById("{}"))
                   || document.querySelector('[id="{}"]');
         if (target) {{
@@ -2310,7 +2314,8 @@ pub async fn browser_select_option(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
             if (!target || target.tagName.toLowerCase() !== 'select') return;
@@ -2615,14 +2620,14 @@ pub async fn browser_find_in_page(
                             matches_count: matchCount,
                             active_match_ordinal: activeOrd
                         }}));
-                        var ifr = document.getElementById('__edith_find_bridge__');
+                        var ifr = document.getElementById('__joren_find_bridge__');
                         if (!ifr) {{
                             ifr = document.createElement('iframe');
-                            ifr.id = '__edith_find_bridge__';
+                            ifr.id = '__joren_find_bridge__';
                             ifr.style.display = 'none';
                             (document.body || document.documentElement).appendChild(ifr);
                         }}
-                        ifr.src = 'edith-find://result?data=' + payload;
+                        ifr.src = 'joren-find://result?data=' + payload;
                     }} catch(err) {{}}
                 }}
             }} catch(outerErr) {{}}
@@ -2983,14 +2988,14 @@ pub async fn browser_reader_extract(
                     }};
 
                     var payload = encodeURIComponent(JSON.stringify(docPayload));
-                    var ifr = document.getElementById('__edith_reader_bridge__');
+                    var ifr = document.getElementById('__joren_reader_bridge__');
                     if (!ifr) {{
                         ifr = document.createElement('iframe');
-                        ifr.id = '__edith_reader_bridge__';
+                        ifr.id = '__joren_reader_bridge__';
                         ifr.style.display = 'none';
                         (document.body || document.documentElement).appendChild(ifr);
                     }}
-                    ifr.src = 'edith-reader://result?data=' + payload;
+                    ifr.src = 'joren-reader://result?data=' + payload;
                 }} catch(err) {{}}
             }})();
             "#

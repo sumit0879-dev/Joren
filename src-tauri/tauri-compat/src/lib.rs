@@ -23,7 +23,14 @@ impl AppPath {
     }
 }
 
+#[derive(Copy)]
 pub struct State<'r, T: ?Sized + 'static>(&'r T);
+
+impl<'r, T: ?Sized + 'static> Clone for State<'r, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
 
 impl<'r, T: ?Sized + 'static> State<'r, T> {
     pub fn new(inner: &'r T) -> Self {
@@ -110,6 +117,10 @@ impl AppHandle {
         Some(Window { app: self.clone() })
     }
 
+    pub fn get_webview(&self, _label: &str) -> Option<WebviewWindow> {
+        Some(WebviewWindow)
+    }
+
     pub fn get_webview_window(&self, _label: &str) -> Option<WebviewWindow> {
         Some(WebviewWindow)
     }
@@ -148,6 +159,18 @@ impl App {
         &self.handle
     }
 
+    pub fn path(&self) -> AppPath {
+        self.handle.path()
+    }
+
+    pub fn get_window(&self, label: &str) -> Option<Window> {
+        self.handle.get_window(label)
+    }
+
+    pub fn get_webview(&self, label: &str) -> Option<WebviewWindow> {
+        self.handle.get_webview(label)
+    }
+
     pub fn manage<T: 'static + Send + Sync>(&self, state: T) {
         self.handle.manage(state);
     }
@@ -181,6 +204,19 @@ pub struct Window {
 impl Window {
     pub fn app_handle(&self) -> &AppHandle {
         &self.app
+    }
+
+    pub fn path(&self) -> AppPath {
+        self.app.path()
+    }
+
+    pub fn add_child(
+        &self,
+        _builder: WebviewBuilder,
+        _pos: LogicalPosition<f64>,
+        _size: LogicalSize<f64>,
+    ) -> Result<WebviewWindow, String> {
+        Ok(WebviewWindow)
     }
 }
 
@@ -237,6 +273,14 @@ pub struct WebviewWindow;
 
 impl WebviewWindow {
     pub fn set_bounds(&self, _bounds: Rect) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn set_position(&self, _pos: Position) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn set_size(&self, _size: Size) -> Result<(), String> {
         Ok(())
     }
 

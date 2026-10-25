@@ -52,17 +52,17 @@ pub fn update_browser_surface(bounds: Option<_cef_rect_t>, show: bool) {
             if ctrl.browser_tab_hwnd != 0 {
                 if show && ctrl.bounds.width > 0 && ctrl.bounds.height > 0 {
                     SetWindowPos(
-                        ctrl.browser_tab_hwnd,
-                        0,
+                        ctrl.browser_tab_hwnd as *mut c_void,
+                        std::ptr::null_mut(),
                         ctrl.bounds.x,
                         ctrl.bounds.y,
                         ctrl.bounds.width,
                         ctrl.bounds.height,
                         SWP_NOZORDER | SWP_NOACTIVATE,
                     );
-                    ShowWindow(ctrl.browser_tab_hwnd, SW_SHOW);
+                    ShowWindow(ctrl.browser_tab_hwnd as *mut c_void, SW_SHOW);
                 } else {
-                    ShowWindow(ctrl.browser_tab_hwnd, SW_HIDE);
+                    ShowWindow(ctrl.browser_tab_hwnd as *mut c_void, SW_HIDE);
                 }
             }
         }
@@ -180,13 +180,13 @@ pub unsafe extern "system" fn RunWinMain(
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: h_instance,
-            hIcon: 0,
-            hCursor: 0,
-            hbrBackground: 0,
+            hInstance: h_instance as *mut c_void,
+            hIcon: std::ptr::null_mut(),
+            hCursor: std::ptr::null_mut(),
+            hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name,
-            hIconSm: 0,
+            hIconSm: std::ptr::null_mut(),
         };
 
         RegisterClassExW(&wnd_class);
@@ -200,18 +200,18 @@ pub unsafe extern "system" fn RunWinMain(
             100,
             1400,
             900,
-            0,
-            0,
-            h_instance,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            h_instance as *mut c_void,
             std::ptr::null(),
         );
 
-        init_surface_controller(main_hwnd);
+        init_surface_controller(main_hwnd as isize);
         ShowWindow(main_hwnd, SW_SHOW);
 
         // Create main UI browser window attached to host HWND
         let mut win_info: _cef_window_info_t = std::mem::zeroed();
-        win_info.parent_window = main_hwnd;
+        win_info.parent_window = main_hwnd as isize;
         win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
         win_info.bounds = _cef_rect_t {
             x: 0,

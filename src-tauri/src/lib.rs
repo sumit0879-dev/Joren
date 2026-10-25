@@ -626,8 +626,13 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
             std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-            let db_path = app_data_dir.join("edith_memory.db");
-            let conn = db::init_db_at(&db_path).map_err(|e| e.to_string())?;
+            let db_path = app_data_dir.join("joren.db");
+            let legacy_dirs = vec![
+                app_data_dir.clone(),
+                std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("com.edith.desktop"),
+                std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("EDITH"),
+            ];
+            let conn = db::migrate_and_init_db(&db_path, &legacy_dirs).map_err(|e| e.to_string())?;
             let conn2 = db::init_db_at(&db_path).map_err(|e| e.to_string())?;
             app.manage(DbState {
                 conn: std::sync::Mutex::new(conn),
