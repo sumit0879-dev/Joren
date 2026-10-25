@@ -745,6 +745,7 @@ pub fn run() {
                     .output();
             }
             _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             browser::browser_create_tab,
             browser::browser_switch_tab,

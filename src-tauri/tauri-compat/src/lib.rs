@@ -151,6 +151,8 @@ impl App {
     pub fn manage<T: 'static + Send + Sync>(&self, state: T) {
         self.handle.manage(state);
     }
+
+    pub fn run<F: 'static>(self, _callback: F) {}
 }
 
 impl Manager for App {
@@ -345,13 +347,18 @@ impl Builder {
         self
     }
 
-    pub fn run(mut self, _ctx: Context) {
+    pub fn build(mut self, _ctx: Context) -> Result<App, Box<dyn std::error::Error>> {
         let mut app = App {
             handle: self.app.clone(),
         };
         if let Some(setup) = self.setup_fn.take() {
             let _ = setup(&mut app);
         }
+        Ok(app)
+    }
+
+    pub fn run(self, ctx: Context) {
+        let _ = self.build(ctx);
     }
 }
 
