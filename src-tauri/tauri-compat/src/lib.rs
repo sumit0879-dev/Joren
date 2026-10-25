@@ -23,14 +23,15 @@ impl AppPath {
     }
 }
 
-#[derive(Copy)]
 pub struct State<'r, T: ?Sized + 'static>(&'r T);
 
 impl<'r, T: ?Sized + 'static> Clone for State<'r, T> {
     fn clone(&self) -> Self {
-        *self
+        State(self.0)
     }
 }
+
+impl<'r, T: ?Sized + 'static> Copy for State<'r, T> {}
 
 impl<'r, T: ?Sized + 'static> State<'r, T> {
     pub fn new(inner: &'r T) -> Self {
