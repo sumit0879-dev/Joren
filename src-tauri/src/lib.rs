@@ -64,12 +64,12 @@ async fn transcribe_audio(
     let mut options = STTOptions::default();
     options.language = language;
 
-    if let Some(groq_key) = cred_store.get_credential("groq") {
+    if let Ok(Some(groq_key)) = cred_store.get_credential("groq") {
         let adapter = voice::CloudSTTAdapter::new("groq", "https://api.groq.com/openai/v1/audio/transcriptions");
         adapter.set_api_key(Some(groq_key));
         let transcript = adapter.transcribe(&audio_buf, &options, &cancel).await.map_err(|e| e.to_string())?;
         return Ok(transcript.text);
-    } else if let Some(openai_key) = cred_store.get_credential("openai") {
+    } else if let Ok(Some(openai_key)) = cred_store.get_credential("openai") {
         let adapter = voice::CloudSTTAdapter::new("openai", "https://api.openai.com/v1/audio/transcriptions");
         adapter.set_api_key(Some(openai_key));
         let transcript = adapter.transcribe(&audio_buf, &options, &cancel).await.map_err(|e| e.to_string())?;

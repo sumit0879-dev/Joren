@@ -68,10 +68,10 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
 
             // Attempt to load libcef.dll from the current directory or executable folder
             let mut handle = GetModuleHandleW(windows_sys::core::w!("libcef.dll"));
-            if handle == 0 {
+            if handle.is_null() {
                 handle = LoadLibraryW(windows_sys::core::w!("libcef.dll"));
             }
-            if handle == 0 {
+            if handle.is_null() {
                 // Try relative to current exe
                 if let Ok(mut exe_dir) = std::env::current_exe() {
                     exe_dir.pop();
@@ -82,7 +82,7 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
                 }
             }
 
-            if handle == 0 {
+            if handle.is_null() {
                 eprintln!("[CEF API] libcef.dll could not be loaded into current process.");
                 return None;
             }

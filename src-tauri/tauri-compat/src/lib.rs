@@ -176,7 +176,7 @@ impl App {
         self.handle.manage(state);
     }
 
-    pub fn run<F: 'static>(self, _callback: F) {}
+    pub fn run<F: FnMut(&AppHandle, RunEvent) + 'static>(self, _callback: F) {}
 }
 
 impl Manager for App {
@@ -305,6 +305,10 @@ impl WebviewWindow {
         Ok(())
     }
 
+    pub fn url(&self) -> Result<Url, String> {
+        Url::parse("about:blank").map_err(|e| e.to_string())
+    }
+
     pub fn close(&self) -> Result<(), String> {
         Ok(())
     }
@@ -351,6 +355,15 @@ pub enum WindowEvent {
     CloseRequested { has_prevented_default: bool },
     Resized(LogicalSize<u32>),
     Focused(bool),
+}
+
+#[derive(Clone, Debug)]
+pub enum RunEvent {
+    ExitRequested { code: Option<i32> },
+    Ready,
+    Resumed,
+    MainEventsCleared,
+    WindowEvent { label: String, event: WindowEvent },
 }
 
 pub struct Context;

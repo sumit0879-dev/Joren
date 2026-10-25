@@ -1857,7 +1857,7 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].content, "Remember to test CEF");
 
-        let sessions = get_sessions(&conn).expect("get_sessions failed");
+        let sessions = get_all_sessions(&conn).expect("get_all_sessions failed");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "Legacy Chat Session");
 
