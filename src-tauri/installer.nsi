@@ -21,9 +21,13 @@ InstallDir "$PROGRAMFILES64\Joren"
 InstallDirRegKey HKLM "Software\Joren" "InstallDir"
 RequestExecutionLevel admin
 
+!ifndef ICON_PATH
+  !define ICON_PATH "src-tauri\icons\icon.ico"
+!endif
+
 !define MUI_ABORTWARNING
-!define MUI_ICON "icons\icon.ico"
-!define MUI_UNICON "icons\icon.ico"
+!define MUI_ICON "${ICON_PATH}"
+!define MUI_UNICON "${ICON_PATH}"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY

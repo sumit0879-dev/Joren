@@ -146,6 +146,18 @@ jobs:
 
           Write-Host "Package staging complete. File count: $((Get-ChildItem -Recurse staging\joren).Count)"
 
+      - name: Setup NSIS Compiler
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis.exe -ErrorAction SilentlyContinue)) {
+              if (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+                  "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              } else {
+                  choco install nsis -y --no-progress
+                  "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              }
+          }
+
       - name: Build Portable Release ZIP & NSIS Installer
         shell: pwsh
         run: |
@@ -154,11 +166,33 @@ jobs:
           Write-Host "Created portable package: staging/joren-windows-x64-portable.zip"
 
           # 2. Compile NSIS installer
-          makensis.exe /DPRODUCT_VERSION="0.1.0" /DSTAGING_DIR="staging\joren" /DOUTFILE="staging\joren-setup-x64.exe" src-tauri\installer.nsi
+          $stagingAbs = (Resolve-Path "staging\joren").Path
+          $outAbs = Join-Path (Resolve-Path "staging").Path "joren-setup-x64.exe"
+          $nsiAbs = (Resolve-Path "src-tauri\installer.nsi").Path
+          $iconAbs = (Resolve-Path "src-tauri\icons\icon.ico").Path
+
+          $makensis = (Get-Command makensis.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $makensis) {
+              if (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe") {
+                  $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+              } elseif (Test-Path "C:\Program Files\NSIS\makensis.exe") {
+                  $makensis = "C:\Program Files\NSIS\makensis.exe"
+              } else {
+                  choco install nsis -y --no-progress
+                  $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+              }
+          }
+
+          Write-Host "Invoking makensis: $makensis"
+          & $makensis /DPRODUCT_VERSION="0.1.0" "/DSTAGING_DIR=$stagingAbs" "/DOUTFILE=$outAbs" "/DICON_PATH=$iconAbs" "$nsiAbs"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "makensis failed with exit code $LASTEXITCODE"
+              exit $LASTEXITCODE
+          }
           Write-Host "Compiled NSIS installer: staging/joren-setup-x64.exe"
 
           # 3. Generate SHA256 checksums
-          Get-FileHash -Algorithm SHA256 staging\*.zip, staging\*.exe | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
+          Get-FileHash -Algorithm SHA256 (Get-ChildItem -Path staging -Include *.zip,*.exe -File) | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
           Write-Host "Generated SHA256 checksums:"
           Get-Content staging\SHA256.txt
 
