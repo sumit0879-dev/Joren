@@ -62,7 +62,9 @@ async fn transcribe_audio(
     let audio_buf = crate::voice::audio::AudioBuffer::new(sample_rate, 1, samples);
 
     let mut options = STTOptions::default();
-    options.language = language;
+    if let Some(lang) = language {
+        options.language = lang;
+    }
 
     if let Ok(Some(groq_key)) = cred_store.get_credential("groq") {
         let adapter = voice::CloudSTTAdapter::new("groq", "https://api.groq.com/openai/v1/audio/transcriptions");

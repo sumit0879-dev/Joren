@@ -1919,10 +1919,11 @@ pub async fn browser_click_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
-        escaped_eid
+        &escaped_eid
     );
 
     let _ = webview.eval(&click_script);
@@ -2028,7 +2029,8 @@ pub async fn browser_type_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
         escaped_text,
@@ -2211,7 +2213,8 @@ pub async fn browser_focus_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_")
     );
@@ -2324,7 +2327,8 @@ pub async fn browser_select_option(
         }} catch(e) {{}}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
         escaped_val
