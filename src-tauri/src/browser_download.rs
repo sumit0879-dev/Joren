@@ -214,7 +214,7 @@ impl BrowserDownloadManager {
         let sanitized = sanitize_filename(&raw_name);
         let safe_dir = get_safe_downloads_dir();
         let (final_path, final_filename) = resolve_collision_path(&safe_dir, &sanitized);
-        let temp_path = safe_dir.join(format!("{}.edith-download", final_filename));
+        let temp_path = safe_dir.join(format!("{}.joren-download", final_filename));
 
         let download_id = uuid::Uuid::new_v4().to_string();
         let now = current_timestamp_ms();
@@ -397,7 +397,7 @@ impl BrowserDownloadManager {
             .map_err(|e| format!("IO_ERROR: Flush failed: {}", e))?;
         drop(file);
 
-        // Step 20: Atomic rename from .edith-download to target filename
+        // Step 20: Atomic rename from .joren-download to target filename
         std::fs::rename(&temp_path, &final_path)
             .map_err(|e| format!("IO_ERROR: Failed to finalize download file: {}", e))?;
 

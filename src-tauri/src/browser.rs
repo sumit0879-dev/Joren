@@ -401,7 +401,8 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
 /// real viewport bounding boxes, and detects password fields with zero value leakage.
 const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
 (function() {
-    if (window.__EDITH_OBSERVER_INSTALLED__) return;
+    if (window.__JOREN_OBSERVER_INSTALLED__ || window.__EDITH_OBSERVER_INSTALLED__) return;
+    window.__JOREN_OBSERVER_INSTALLED__ = true;
     window.__EDITH_OBSERVER_INSTALLED__ = true;
 
     function computeElementHash(str) {
@@ -413,7 +414,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
         return Math.abs(hash).toString(36).slice(0, 7);
     }
 
-    window.__EDITH_LIVE_OBSERVE__ = function(scope) {
+    window.__JOREN_LIVE_OBSERVE__ = function(scope) {
         try {
             var doc = document;
             var win = window;
@@ -555,6 +556,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
 
                 // Tag element with identifier for direct action execution
                 try {
+                    el.setAttribute('data-joren-eid', elementId);
                     el.setAttribute('data-edith-eid', elementId);
                 } catch(e) {}
 
@@ -623,6 +625,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
             };
         }
     };
+    window.__EDITH_LIVE_OBSERVE__ = window.__JOREN_LIVE_OBSERVE__;
 })();
 "#;
 
@@ -713,7 +716,7 @@ pub async fn browser_create_tab(
             let s = nav_url.as_str();
 
             // Intercept internal find results from bridge iframe
-            if s.starts_with("edith-find:") {
+            if s.starts_with("joren-find:") || s.starts_with("edith-find:") {
                 if let Some(query_str) = nav_url.query() {
                     for pair in query_str.split('&') {
                         if let Some((k, v)) = pair.split_once('=') {
@@ -766,7 +769,7 @@ pub async fn browser_create_tab(
             }
 
             // Intercept internal reader extraction results from bridge iframe
-            if s.starts_with("edith-reader:") {
+            if s.starts_with("joren-reader:") || s.starts_with("edith-reader:") {
                 if let Some(query_str) = nav_url.query() {
                     for pair in query_str.split('&') {
                         if let Some((k, v)) = pair.split_once('=') {
@@ -1874,7 +1877,8 @@ pub async fn browser_click_element(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
 
@@ -1915,10 +1919,11 @@ pub async fn browser_click_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
-        escaped_eid
+        &escaped_eid
     );
 
     let _ = webview.eval(&click_script);
@@ -1980,7 +1985,8 @@ pub async fn browser_type_element(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
 
@@ -2023,7 +2029,8 @@ pub async fn browser_type_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
         escaped_text,
@@ -2196,7 +2203,8 @@ pub async fn browser_focus_element(
     let focus_script = format!(
         r#"
     (function() {{
-        var target = document.querySelector('[data-edith-eid="{}"]')
+        var target = document.querySelector('[data-joren-eid="{}"]')
+                  || document.querySelector('[data-edith-eid="{}"]')
                   || (document.getElementById("{}"))
                   || document.querySelector('[id="{}"]');
         if (target) {{
@@ -2205,7 +2213,8 @@ pub async fn browser_focus_element(
         }}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_")
     );
@@ -2308,7 +2317,8 @@ pub async fn browser_select_option(
         r#"
     (function() {{
         try {{
-            var target = document.querySelector('[data-edith-eid="{}"]')
+            var target = document.querySelector('[data-joren-eid="{}"]')
+                      || document.querySelector('[data-edith-eid="{}"]')
                       || (document.getElementById("{}"))
                       || document.querySelector('[id="{}"]');
             if (!target || target.tagName.toLowerCase() !== 'select') return;
@@ -2317,7 +2327,8 @@ pub async fn browser_select_option(
         }} catch(e) {{}}
     }})();
     "#,
-        escaped_eid,
+        &escaped_eid,
+        &escaped_eid,
         escaped_eid.trim_start_matches("id_"),
         escaped_eid.trim_start_matches("id_"),
         escaped_val
@@ -2613,14 +2624,14 @@ pub async fn browser_find_in_page(
                             matches_count: matchCount,
                             active_match_ordinal: activeOrd
                         }}));
-                        var ifr = document.getElementById('__edith_find_bridge__');
+                        var ifr = document.getElementById('__joren_find_bridge__');
                         if (!ifr) {{
                             ifr = document.createElement('iframe');
-                            ifr.id = '__edith_find_bridge__';
+                            ifr.id = '__joren_find_bridge__';
                             ifr.style.display = 'none';
                             (document.body || document.documentElement).appendChild(ifr);
                         }}
-                        ifr.src = 'edith-find://result?data=' + payload;
+                        ifr.src = 'joren-find://result?data=' + payload;
                     }} catch(err) {{}}
                 }}
             }} catch(outerErr) {{}}
@@ -2841,7 +2852,8 @@ pub async fn browser_save_page_html(
 
     // Record in database for downloads list integration
     if let Ok(app_dir) = app.path().app_data_dir() {
-        if let Ok(conn) = crate::db::init_db_at(&app_dir.join("edith_memory.db")) {
+        let db_path = app_dir.join("joren.db");
+        if let Ok(conn) = crate::db::migrate_and_init_db(&db_path, &[app_dir.clone()]) {
             let _ = crate::db::upsert_browser_download(
                 &conn,
                 &crate::db::BrowserDownloadRecord {
@@ -2980,14 +2992,14 @@ pub async fn browser_reader_extract(
                     }};
 
                     var payload = encodeURIComponent(JSON.stringify(docPayload));
-                    var ifr = document.getElementById('__edith_reader_bridge__');
+                    var ifr = document.getElementById('__joren_reader_bridge__');
                     if (!ifr) {{
                         ifr = document.createElement('iframe');
-                        ifr.id = '__edith_reader_bridge__';
+                        ifr.id = '__joren_reader_bridge__';
                         ifr.style.display = 'none';
                         (document.body || document.documentElement).appendChild(ifr);
                     }}
-                    ifr.src = 'edith-reader://result?data=' + payload;
+                    ifr.src = 'joren-reader://result?data=' + payload;
                 }} catch(err) {{}}
             }})();
             "#

@@ -1,5 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   Session,
   Message,
@@ -50,9 +48,74 @@ import type {
 import type { EdithEventEnvelope } from '../events/types';
 export * from '../events';
 
-export const isTauri = () => {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export type UnlistenFn = () => void;
+
+export const isJoren = () => {
+  return (
+    typeof window !== 'undefined' &&
+    ('__JOREN__' in window ||
+      '__TAURI_INTERNALS__' in window ||
+      window.location.protocol === 'joren:' ||
+      window.location.protocol === 'http:' ||
+      window.location.protocol === 'https:')
+  );
 };
+
+export const isTauri = isJoren;
+
+/**
+ * Native IPC invoke mechanism using internal same-origin CEF endpoint:
+ * POST /api/invoke with JSON body: { cmd: string, args: Record<string, any> }
+ */
+export async function invoke<T = any>(
+  cmd: string,
+  args: Record<string, any> = {}
+): Promise<T> {
+  if (typeof window === 'undefined') return undefined as any;
+
+  if (isJoren()) {
+    try {
+      const res = await fetch('/api/invoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cmd, args }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Command '${cmd}' failed with status ${res.status}`);
+      }
+
+      return (await res.json()) as T;
+    } catch (err: any) {
+      console.warn(`[JOREN IPC] invoke('${cmd}') failed:`, err);
+      throw err;
+    }
+  }
+
+  throw new Error(`Cannot invoke "${cmd}": Joren desktop runtime not detected`);
+}
+
+/**
+ * Event listener mechanism receiving events dispatched by CEF host
+ */
+export function listen<T = any>(
+  event: string,
+  handler: (event: { event: string; id: number; payload: T }) => void
+): Promise<UnlistenFn> {
+  const listener = (e: Event) => {
+    const custom = e as CustomEvent<{ event: string; payload: T }>;
+    if (custom.detail && custom.detail.event === event) {
+      handler({ event, id: 0, payload: custom.detail.payload });
+    }
+  };
+  window.addEventListener('joren-event', listener);
+  return Promise.resolve(() => {
+    window.removeEventListener('joren-event', listener);
+  });
+}
 
 // Full catalog of supported hardcoded AI providers and models (Groq and Gemini only)
 export const DEFAULT_PROVIDERS: ProviderDef[] = [
@@ -160,10 +223,20 @@ export const DEFAULT_BUILTIN_APPS: BuiltinApp[] = [
   { id: 'bi_vscode', name: 'vs code', path: 'code', keywords: 'vscode,code,editor,ide', builtin: true },
 ];
 
-// LocalStorage helpers for browser/testing persistence
+// LocalStorage helpers for browser/testing persistence with automatic legacy migration
 const getStoredJson = <T>(key: string, fallback: T): T => {
   try {
-    const val = localStorage.getItem(key);
+    let val = localStorage.getItem(key);
+    if (!val && key.startsWith('joren_')) {
+      const legacyKey = key.replace('joren_', 'edith_');
+      const legacyVal = localStorage.getItem(legacyKey);
+      if (legacyVal) {
+        val = legacyVal;
+        try {
+          localStorage.setItem(key, legacyVal);
+        } catch {}
+      }
+    }
     return val ? JSON.parse(val) : fallback;
   } catch {
     return fallback;
@@ -179,21 +252,21 @@ const setStoredJson = (key: string, value: any) => {
 // --- Settings ---
 export async function getAllSettings(): Promise<Record<string, string>> {
   if (!isTauri()) {
-    return getStoredJson<Record<string, string>>('edith_settings', {});
+    return getStoredJson<Record<string, string>>('joren_settings', {});
   }
   try {
     const res = await invoke<Record<string, string>>('get_all_settings');
     return res || {};
   } catch (e) {
     console.warn('getAllSettings fallback to localStorage:', e);
-    return getStoredJson<Record<string, string>>('edith_settings', {});
+    return getStoredJson<Record<string, string>>('joren_settings', {});
   }
 }
 
 export async function saveSetting(key: string, value: string): Promise<void> {
-  const current = getStoredJson<Record<string, string>>('edith_settings', {});
+  const current = getStoredJson<Record<string, string>>('joren_settings', {});
   current[key] = value;
-  setStoredJson('edith_settings', current);
+  setStoredJson('joren_settings', current);
 
   if (isTauri()) {
     try {
@@ -205,7 +278,7 @@ export async function saveSetting(key: string, value: string): Promise<void> {
 }
 
 export async function syncSettings(settings: Record<string, string>): Promise<void> {
-  setStoredJson('edith_settings', settings);
+  setStoredJson('joren_settings', settings);
   if (isTauri()) {
     try {
       await invoke('sync_settings', { settings });
@@ -218,7 +291,7 @@ export async function syncSettings(settings: Record<string, string>): Promise<vo
 // --- Sessions & History ---
 export async function getAllSessions(): Promise<Session[]> {
   if (!isTauri()) {
-    return getStoredJson<Session[]>('edith_sessions', [
+    return getStoredJson<Session[]>('joren_sessions', [
       { id: 'session_default', title: 'General Chat' },
     ]);
   }
@@ -228,16 +301,16 @@ export async function getAllSessions(): Promise<Session[]> {
       ? res
       : [{ id: 'session_default', title: 'General Chat' }];
   } catch (e) {
-    return getStoredJson<Session[]>('edith_sessions', [
+    return getStoredJson<Session[]>('joren_sessions', [
       { id: 'session_default', title: 'General Chat' },
     ]);
   }
 }
 
 export async function createSession(sessionId: string, title: string): Promise<void> {
-  const list = getStoredJson<Session[]>('edith_sessions', []);
+  const list = getStoredJson<Session[]>('joren_sessions', []);
   if (!list.find((s) => s.id === sessionId)) {
-    setStoredJson('edith_sessions', [{ id: sessionId, title }, ...list]);
+    setStoredJson('joren_sessions', [{ id: sessionId, title }, ...list]);
   }
   if (isTauri()) {
     try {
@@ -249,9 +322,9 @@ export async function createSession(sessionId: string, title: string): Promise<v
 }
 
 export async function renameSession(sessionId: string, newTitle: string): Promise<void> {
-  const list = getStoredJson<Session[]>('edith_sessions', []);
+  const list = getStoredJson<Session[]>('joren_sessions', []);
   setStoredJson(
-    'edith_sessions',
+    'joren_sessions',
     list.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s))
   );
   if (isTauri()) {
@@ -264,9 +337,9 @@ export async function renameSession(sessionId: string, newTitle: string): Promis
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const list = getStoredJson<Session[]>('edith_sessions', []);
+  const list = getStoredJson<Session[]>('joren_sessions', []);
   setStoredJson(
-    'edith_sessions',
+    'joren_sessions',
     list.filter((s) => s.id !== sessionId)
   );
   if (isTauri()) {
@@ -280,13 +353,13 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
 export async function getSessionMessages(sessionId: string): Promise<Message[]> {
   if (!isTauri()) {
-    return getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+    return getStoredJson<Message[]>('joren_msgs_' + sessionId, []);
   }
   try {
     const res = await invoke<Message[]>('get_session_messages', { sessionId });
     return res || [];
   } catch (e) {
-    return getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+    return getStoredJson<Message[]>('joren_msgs_' + sessionId, []);
   }
 }
 
@@ -296,9 +369,9 @@ export async function saveSessionMessage(
   text: string,
   time: string
 ): Promise<void> {
-  const msgs = getStoredJson<Message[]>('edith_msgs_' + sessionId, []);
+  const msgs = getStoredJson<Message[]>('joren_msgs_' + sessionId, []);
   msgs.push({ role: role as any, text, content: text, time, session_id: sessionId });
-  setStoredJson('edith_msgs_' + sessionId, msgs);
+  setStoredJson('joren_msgs_' + sessionId, msgs);
 
   if (isTauri()) {
     try {
@@ -453,7 +526,7 @@ export async function onToolProposal(callback: (proposal: CommandProposalPayload
 // --- Plugins ---
 export async function getPlugins(): Promise<PluginWithState[]> {
   if (!isTauri()) {
-    return getStoredJson<PluginWithState[]>('edith_plugins', DEFAULT_PLUGINS);
+    return getStoredJson<PluginWithState[]>('joren_plugins', DEFAULT_PLUGINS);
   }
   try {
     const res = await invoke<PluginWithState[]>('get_plugins');
@@ -464,7 +537,7 @@ export async function getPlugins(): Promise<PluginWithState[]> {
 }
 
 export async function togglePlugin(pluginId: string): Promise<boolean> {
-  const current = getStoredJson<PluginWithState[]>('edith_plugins', DEFAULT_PLUGINS);
+  const current = getStoredJson<PluginWithState[]>('joren_plugins', DEFAULT_PLUGINS);
   let newState = true;
   const updated = current.map((p) => {
     if (p.id === pluginId) {
@@ -473,7 +546,7 @@ export async function togglePlugin(pluginId: string): Promise<boolean> {
     }
     return p;
   });
-  setStoredJson('edith_plugins', updated);
+  setStoredJson('joren_plugins', updated);
 
   if (isTauri()) {
     try {
@@ -549,7 +622,7 @@ export async function takeScreenshot(): Promise<string> {
 // --- Personal Notes ---
 export async function getPersonalNotes(): Promise<Note[]> {
   if (!isTauri()) {
-    return getStoredJson<Note[]>('edith_notes', [
+    return getStoredJson<Note[]>('joren_notes', [
       { id: '1', content: '# Welcome to Joren Notes\n- Keep quick reminders and notes here.\n- Auto-saved to SQLite.' },
     ]);
   }
@@ -557,12 +630,12 @@ export async function getPersonalNotes(): Promise<Note[]> {
     const res = await invoke<Note[]>('get_personal_notes');
     return res && res.length > 0 ? res : [];
   } catch {
-    return getStoredJson<Note[]>('edith_notes', []);
+    return getStoredJson<Note[]>('joren_notes', []);
   }
 }
 
 export async function savePersonalNote(content: string): Promise<void> {
-  setStoredJson('edith_notes', [{ id: '1', content }]);
+  setStoredJson('joren_notes', [{ id: '1', content }]);
   if (isTauri()) {
     try {
       await invoke('save_personal_note', { content });
@@ -571,7 +644,7 @@ export async function savePersonalNote(content: string): Promise<void> {
 }
 
 export async function deletePersonalNote(noteId: string): Promise<void> {
-  setStoredJson('edith_notes', []);
+  setStoredJson('joren_notes', []);
   if (isTauri()) {
     try {
       await invoke('delete_personal_note', { noteId });
@@ -582,7 +655,7 @@ export async function deletePersonalNote(noteId: string): Promise<void> {
 // --- Custom Apps ---
 export async function getCustomApps(): Promise<CustomApp[]> {
   if (!isTauri()) {
-    return getStoredJson<CustomApp[]>('edith_custom_apps', [
+    return getStoredJson<CustomApp[]>('joren_custom_apps', [
       { id: 1, name: 'vscode', path: 'code', keywords: 'vscode,code,editor' },
       { id: 2, name: 'spotify', path: 'spotify.exe', keywords: 'spotify,music,songs' },
     ]);
@@ -591,14 +664,14 @@ export async function getCustomApps(): Promise<CustomApp[]> {
     const res = await invoke<CustomApp[]>('get_custom_apps');
     return res || [];
   } catch {
-    return getStoredJson<CustomApp[]>('edith_custom_apps', []);
+    return getStoredJson<CustomApp[]>('joren_custom_apps', []);
   }
 }
 
 export async function addCustomApp(name: string, path: string, keywords: string): Promise<void> {
-  const current = getStoredJson<CustomApp[]>('edith_custom_apps', []);
+  const current = getStoredJson<CustomApp[]>('joren_custom_apps', []);
   current.push({ id: Date.now(), name, path, keywords });
-  setStoredJson('edith_custom_apps', current);
+  setStoredJson('joren_custom_apps', current);
   if (isTauri()) {
     try {
       await invoke('add_custom_app', { name, path, keywords });
@@ -607,9 +680,9 @@ export async function addCustomApp(name: string, path: string, keywords: string)
 }
 
 export async function deleteCustomApp(appId: number): Promise<void> {
-  const current = getStoredJson<CustomApp[]>('edith_custom_apps', []);
+  const current = getStoredJson<CustomApp[]>('joren_custom_apps', []);
   setStoredJson(
-    'edith_custom_apps',
+    'joren_custom_apps',
     current.filter((a) => a.id !== appId)
   );
   if (isTauri()) {
@@ -660,19 +733,19 @@ export async function ttsSpeak(text: string, voice?: string): Promise<void> {
   }
 }
 
-export async function localTtsSpeak(text: string, voice: string, modelName: string): Promise<void> {
-  if (!isTauri()) return;
-  return await invoke('local_tts_speak', { text, voice, modelName });
-}
-
-export async function getKokoroModels(): Promise<string[]> {
-  if (!isTauri()) return ['kokoro-v1.0.int8.onnx', 'kokoro-v1.0.fp16.onnx'];
-  try {
-    const res = await invoke<string[]>('get_kokoro_models');
-    return res && res.length > 0 ? res : ['kokoro-v1.0.int8.onnx'];
-  } catch {
-    return ['kokoro-v1.0.int8.onnx'];
+export async function transcribeAudio(
+  samples: number[],
+  sampleRate: number,
+  language = 'en'
+): Promise<string> {
+  if (!isJoren()) {
+    throw new Error('Speech-to-text requires the Joren desktop runtime.');
   }
+  return await invoke<string>('transcribe_audio', {
+    samples,
+    sampleRate,
+    language,
+  });
 }
 
 export async function ttsStop(): Promise<void> {
@@ -697,9 +770,9 @@ export async function ttsStop(): Promise<void> {
 
 // --- Vector Memory (LanceDB) ---
 export async function saveToMemory(text: string, source: string): Promise<void> {
-  const current = getStoredJson<MemoryChunk[]>('edith_memory', []);
+  const current = getStoredJson<MemoryChunk[]>('joren_memory', []);
   current.push({ id: 'mem_' + Date.now(), text, source, score: 0.12 });
-  setStoredJson('edith_memory', current);
+  setStoredJson('joren_memory', current);
   if (isTauri()) {
     try {
       await invoke('save_to_memory_cmd', { text, source });
@@ -709,7 +782,7 @@ export async function saveToMemory(text: string, source: string): Promise<void> 
 
 export async function searchMemory(query: string): Promise<MemoryChunk[]> {
   if (!isTauri()) {
-    const current = getStoredJson<MemoryChunk[]>('edith_memory', [
+    const current = getStoredJson<MemoryChunk[]>('joren_memory', [
       { id: '1', text: 'Joren is an advanced desktop assistant for high-productivity workflows.', source: 'system_core', score: 0.08 },
       { id: '2', text: 'Project built with Tauri 2, Rust backend and React frontend.', source: 'project_docs', score: 0.15 },
     ]);
@@ -725,7 +798,7 @@ export async function searchMemory(query: string): Promise<MemoryChunk[]> {
 
 export async function getMemories(): Promise<MemoryChunk[]> {
   if (!isTauri()) {
-    return getStoredJson<MemoryChunk[]>('edith_memory', [
+    return getStoredJson<MemoryChunk[]>('joren_memory', [
       { id: '1', text: 'Joren is an advanced desktop assistant for high-productivity workflows.', source: 'system_core', score: 0.08 },
       { id: '2', text: 'Project built with Tauri 2, Rust backend and React frontend.', source: 'project_docs', score: 0.15 },
       { id: '3', text: 'Tactical intelligence with custom AI providers support.', source: 'chat:session_1', score: 0.22 },
