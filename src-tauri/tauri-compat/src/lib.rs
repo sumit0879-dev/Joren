@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Default)]
 pub struct AppPath;
@@ -222,7 +222,7 @@ pub struct Rect {
     pub size: Size,
 }
 
-pub type Url = reqwest::Url;
+pub use url::Url;
 
 #[derive(Clone, Debug)]
 pub enum WebviewUrl {

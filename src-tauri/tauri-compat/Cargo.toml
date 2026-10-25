@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 serde = "1"
 serde_json = "1"
+url = "2.5"
 tauri-macros = { path = "../tauri-macros" }
 
 [lib]
