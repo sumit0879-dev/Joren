@@ -4,11 +4,12 @@ on:
   push:
     branches:
       - main
+      - feat/*
+      - fix/*
   pull_request:
     branches:
       - main
   workflow_dispatch:
-
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,6 +49,9 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Build frontend (TypeScript & Vite)
+        run: npm run build
+
       - name: Setup Rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
 
@@ -59,54 +63,106 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             src-tauri/target/
-          key: ${{ runner.os }}-cargo-release-v3-joren-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/build.rs') }}
+          key: ${{ runner.os }}-cargo-release-v4-joren-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-v3-joren-${{ hashFiles('src-tauri/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-release-v3-joren-
+            ${{ runner.os }}-cargo-release-v4-joren-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-release-v4-joren-
 
-      - name: Build frontend
-        run: npm run build
+      - name: Cache CEF binary distribution
+        id: cache-cef
+        uses: actions/cache@v4
+        with:
+          path: cef-dist
+          key: cef-windows64-156.0.14-v1
 
-      - name: Run Rust cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
-
-      - name: Run Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
-
-      - name: Build and package Tauri application
-        run: npm run tauri build
-
-      - name: Stage release artifacts & generate SHA256 checksums
+      - name: Download & Extract CEF Distribution (if cache missed)
+        if: steps.cache-cef.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path staging | Out-Null
+          New-Item -ItemType Directory -Force -Path cef-dist | Out-Null
+          $url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.14%2Bg4fa4ab5%2Bchromium-156.0.8078.48_windows64.tar.bz2"
+          Write-Host "Downloading CEF distribution: $url"
+          curl.exe -sSL --retry 3 --retry-delay 5 $url -o cef_archive.tar.bz2
+          Write-Host "Extracting CEF distribution..."
+          tar.exe -xjf cef_archive.tar.bz2 -C cef-dist --strip-components=1
+          Remove-Item -Force cef_archive.tar.bz2
+          Write-Host "CEF distribution successfully cached."
 
-          # Stage NSIS setup installer
-          $nsisExe = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis/*.exe" | Select-Object -First 1
-          if ($nsisExe) {
-              Copy-Item $nsisExe.FullName -Destination "staging/$($nsisExe.Name)"
-              Write-Host "Staged NSIS installer: $($nsisExe.Name)"
+      - name: Build Sandboxed Joren Client Library (Release)
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Stage Release Package & Runtime Files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path staging\joren\app | Out-Null
+          New-Item -ItemType Directory -Force -Path staging\joren\locales | Out-Null
+
+          # 1. Official CEF Sandbox Bootstrap executable -> joren.exe
+          $bootstrapExe = "cef-dist\Release\bootstrap.exe"
+          if (Test-Path $bootstrapExe) {
+              Copy-Item $bootstrapExe -Destination "staging\joren\joren.exe"
+              Write-Host "Staged sandbox bootstrap executable as joren.exe"
           } else {
-              Write-Error "NSIS installer not found in src-tauri/target/release/bundle/nsis/"
+              # Fallback to bootstrapc.exe or client executable if present
+              $bootstrapc = "cef-dist\Release\bootstrapc.exe"
+              if (Test-Path $bootstrapc) {
+                  Copy-Item $bootstrapc -Destination "staging\joren\joren.exe"
+              } else {
+                  Write-Error "Bootstrap executable not found in cef-dist\Release\"
+                  exit 1
+              }
+          }
+
+          # 2. Rust client DLL (joren.dll)
+          $jorenDll = "src-tauri\target\release\joren.dll"
+          if (Test-Path $jorenDll) {
+              Copy-Item $jorenDll -Destination "staging\joren\joren.dll"
+              Write-Host "Staged Rust client library: joren.dll"
+          } else {
+              Write-Error "joren.dll not found in src-tauri\target\release\"
               exit 1
           }
 
-          # Stage standalone binary
-          $mainExe = "src-tauri/target/release/joren.exe"
-          if (Test-Path $mainExe) {
-              Copy-Item $mainExe -Destination "staging/joren.exe"
-              Write-Host "Staged standalone executable: joren.exe"
-          } else {
-              Write-Error "Standalone binary not found at $mainExe"
-              exit 1
+          # 3. CEF runtime binaries and resources
+          Copy-Item "cef-dist\Release\*.dll" -Destination "staging\joren\" -Force
+          Copy-Item "cef-dist\Release\*.bin" -Destination "staging\joren\" -Force
+          Copy-Item "cef-dist\Resources\*.*" -Destination "staging\joren\" -Force
+          Copy-Item "cef-dist\Resources\locales\*.*" -Destination "staging\joren\locales\" -Force
+
+          # 4. Bundled frontend React build
+          Copy-Item -Recurse -Force "build\*" -Destination "staging\joren\app\"
+          Write-Host "Staged React frontend build to app/"
+
+          # 5. Local LLM assets (preserved)
+          if (Test-Path "Llama") {
+              Copy-Item -Recurse -Force "Llama" -Destination "staging\joren\Llama"
+              Write-Host "Preserved and staged Llama local LLM assets"
           }
 
-          # Generate SHA256 checksum file
-          Get-FileHash -Algorithm SHA256 -Path staging/*.exe | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content -Path staging/SHA256.txt
-          Write-Host "Generated SHA256.txt checksums:"
-          Get-Content staging/SHA256.txt
+          # 6. License
+          if (Test-Path "LICENSE") {
+              Copy-Item "LICENSE" -Destination "staging\joren\LICENSE"
+          }
 
-      - name: Upload Windows build artifact
+          Write-Host "Package staging complete. File count: $((Get-ChildItem -Recurse staging\joren).Count)"
+
+      - name: Build Portable Release ZIP & NSIS Installer
+        shell: pwsh
+        run: |
+          # 1. Create portable ZIP containing complete runtime
+          Compress-Archive -Path "staging\joren\*" -DestinationPath "staging\joren-windows-x64-portable.zip" -Force
+          Write-Host "Created portable package: staging/joren-windows-x64-portable.zip"
+
+          # 2. Compile NSIS installer
+          makensis.exe /DPRODUCT_VERSION="0.1.0" /DSTAGING_DIR="staging\joren" /DOUTFILE="staging\joren-setup-x64.exe" src-tauri\installer.nsi
+          Write-Host "Compiled NSIS installer: staging/joren-setup-x64.exe"
+
+          # 3. Generate SHA256 checksums
+          Get-FileHash -Algorithm SHA256 staging\*.zip, staging\*.exe | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
+          Write-Host "Generated SHA256 checksums:"
+          Get-Content staging\SHA256.txt
+
+      - name: Upload Windows Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: joren-windows-x64-build

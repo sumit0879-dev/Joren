@@ -35,10 +35,49 @@ mod tts;
 pub mod voice;
 pub mod weather;
 pub mod windows;
+pub mod cef;
+pub use cef::RunWinMain;
 
 use db::DbState;
 use std::collections::HashMap;
 use tauri::State;
+
+#[tauri::command]
+async fn transcribe_audio(
+    samples: Vec<f32>,
+    sample_rate: u32,
+    language: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    use crate::voice::stt::{STTAdapter, STTOptions};
+    use crate::ai::CredentialStore;
+
+    let app_settings = {
+        let conn = state.conn.lock().unwrap();
+        db::get_all_settings(&conn).unwrap_or_default()
+    };
+
+    let cred_store = ai::SettingsCredentialStore::new(app_settings);
+    let cancel = crate::task::CancellationToken::new();
+    let audio_buf = crate::voice::audio::AudioBuffer::new(sample_rate, 1, samples);
+
+    let mut options = STTOptions::default();
+    options.language = language;
+
+    if let Some(groq_key) = cred_store.get_credential("groq") {
+        let adapter = voice::CloudSTTAdapter::new("groq", "https://api.groq.com/openai/v1/audio/transcriptions");
+        adapter.set_api_key(Some(groq_key));
+        let transcript = adapter.transcribe(&audio_buf, &options, &cancel).await.map_err(|e| e.to_string())?;
+        return Ok(transcript.text);
+    } else if let Some(openai_key) = cred_store.get_credential("openai") {
+        let adapter = voice::CloudSTTAdapter::new("openai", "https://api.openai.com/v1/audio/transcriptions");
+        adapter.set_api_key(Some(openai_key));
+        let transcript = adapter.transcribe(&audio_buf, &options, &cancel).await.map_err(|e| e.to_string())?;
+        return Ok(transcript.text);
+    }
+
+    Err("No Groq or OpenAI API key configured. Please set an API key in Settings -> Models & Providers for speech recognition.".to_string())
+}
 
 #[tauri::command]
 fn agent_resolve_proposal(
@@ -706,10 +745,6 @@ pub fn run() {
                     .output();
             }
             _ => {}
-        })
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             browser::browser_create_tab,
             browser::browser_switch_tab,
@@ -881,10 +916,9 @@ pub fn run() {
             providers::get_providers,
             providers::fetch_custom_models,
             tts::tts_speak,
-            tts::local_tts_speak,
-            tts::get_kokoro_models,
             tts::tts_stop,
             tts::tts_set_voice,
+            transcribe_audio,
             ai_list_providers,
             ai_list_models,
             ai_query_capabilities,

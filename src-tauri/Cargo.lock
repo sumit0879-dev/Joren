@@ -2729,41 +2729,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "joren"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-schema",
- "base64 0.22.1",
- "chrono",
- "edge-tts-rust",
- "futures",
- "image 0.25.10",
- "lancedb",
- "lazy_static",
- "open",
- "regex",
- "reqwest 0.12.28",
- "rodio",
- "rusqlite",
- "scraper",
- "screenshots",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-opener",
- "tauri-plugin-shell",
- "tokio",
- "urlencoding",
- "uuid",
-]
-
-[[package]]
 name = "ego-tree"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4392,6 +4357,41 @@ checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
+]
+
+[[package]]
+name = "joren"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "base64 0.22.1",
+ "chrono",
+ "edge-tts-rust",
+ "futures",
+ "image 0.25.10",
+ "lancedb",
+ "lazy_static",
+ "open",
+ "regex",
+ "reqwest 0.12.28",
+ "rodio",
+ "rusqlite",
+ "scraper",
+ "screenshots",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-opener",
+ "tauri-plugin-shell",
+ "tokio",
+ "urlencoding",
+ "uuid",
 ]
 
 [[package]]

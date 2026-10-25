@@ -1,5 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   Session,
   Message,
@@ -50,9 +48,74 @@ import type {
 import type { EdithEventEnvelope } from '../events/types';
 export * from '../events';
 
-export const isTauri = () => {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+export type UnlistenFn = () => void;
+
+export const isJoren = () => {
+  return (
+    typeof window !== 'undefined' &&
+    ('__JOREN__' in window ||
+      '__TAURI_INTERNALS__' in window ||
+      window.location.protocol === 'joren:' ||
+      window.location.protocol === 'http:' ||
+      window.location.protocol === 'https:')
+  );
 };
+
+export const isTauri = isJoren;
+
+/**
+ * Native IPC invoke mechanism using internal same-origin CEF endpoint:
+ * POST /api/invoke with JSON body: { cmd: string, args: Record<string, any> }
+ */
+export async function invoke<T = any>(
+  cmd: string,
+  args: Record<string, any> = {}
+): Promise<T> {
+  if (typeof window === 'undefined') return undefined as any;
+
+  if (isJoren()) {
+    try {
+      const res = await fetch('/api/invoke', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ cmd, args }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Command '${cmd}' failed with status ${res.status}`);
+      }
+
+      return (await res.json()) as T;
+    } catch (err: any) {
+      console.warn(`[JOREN IPC] invoke('${cmd}') failed:`, err);
+      throw err;
+    }
+  }
+
+  throw new Error(`Cannot invoke "${cmd}": Joren desktop runtime not detected`);
+}
+
+/**
+ * Event listener mechanism receiving events dispatched by CEF host
+ */
+export function listen<T = any>(
+  event: string,
+  handler: (event: { event: string; id: number; payload: T }) => void
+): Promise<UnlistenFn> {
+  const listener = (e: Event) => {
+    const custom = e as CustomEvent<{ event: string; payload: T }>;
+    if (custom.detail && custom.detail.event === event) {
+      handler({ event, id: 0, payload: custom.detail.payload });
+    }
+  };
+  window.addEventListener('joren-event', listener);
+  return Promise.resolve(() => {
+    window.removeEventListener('joren-event', listener);
+  });
+}
 
 // Full catalog of supported hardcoded AI providers and models (Groq and Gemini only)
 export const DEFAULT_PROVIDERS: ProviderDef[] = [
@@ -660,19 +723,19 @@ export async function ttsSpeak(text: string, voice?: string): Promise<void> {
   }
 }
 
-export async function localTtsSpeak(text: string, voice: string, modelName: string): Promise<void> {
-  if (!isTauri()) return;
-  return await invoke('local_tts_speak', { text, voice, modelName });
-}
-
-export async function getKokoroModels(): Promise<string[]> {
-  if (!isTauri()) return ['kokoro-v1.0.int8.onnx', 'kokoro-v1.0.fp16.onnx'];
-  try {
-    const res = await invoke<string[]>('get_kokoro_models');
-    return res && res.length > 0 ? res : ['kokoro-v1.0.int8.onnx'];
-  } catch {
-    return ['kokoro-v1.0.int8.onnx'];
+export async function transcribeAudio(
+  samples: number[],
+  sampleRate: number,
+  language = 'en'
+): Promise<string> {
+  if (!isJoren()) {
+    throw new Error('Speech-to-text requires the Joren desktop runtime.');
   }
+  return await invoke<string>('transcribe_audio', {
+    samples,
+    sampleRate,
+    language,
+  });
 }
 
 export async function ttsStop(): Promise<void> {

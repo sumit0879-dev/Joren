@@ -47,9 +47,7 @@ import {
 } from 'lucide-react';
 import { browserController, SEARCH_ENGINES } from '../services/browserController';
 import { useApp } from '../context/AppContext';
-import { isTauri } from '../services/tauri';
-import { listen } from '@tauri-apps/api/event';
-import { Menu, MenuItem, PredefinedMenuItem, Submenu } from '@tauri-apps/api/menu';
+import { isTauri, listen } from '../services/tauri';
 import type {
   SearchEngineId,
   SearchEngineConfig,
@@ -126,8 +124,15 @@ export const BrowserView: React.FC = () => {
   // New Tab search
   const [newTabSearchQuery, setNewTabSearchQuery] = useState('');
 
-  // Context Menu fallback for non-Tauri
+  // Context Menu state & dismiss listener
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handleClose = () => setContextMenu(null);
+    window.addEventListener('click', handleClose);
+    return () => window.removeEventListener('click', handleClose);
+  }, [contextMenu]);
 
   // Viewport & Omnibox Refs
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -560,399 +565,48 @@ export const BrowserView: React.FC = () => {
   // --- Tier A & Tier B Native Menus (Zero Airspace Occlusion & Zero Webpage Shifting) ---
 
   // 1. Tab Context Menu
-  const handleTabContextMenu = useCallback(async (e: React.MouseEvent, tabId: string) => {
+  // 1. Tab Context Menu
+  const handleTabContextMenu = useCallback((e: React.MouseEvent, tabId: string) => {
     e.preventDefault();
     e.stopPropagation();
-
-    if (isTauri()) {
-      try {
-        const targetTab = browserState.tabs.find((t) => t.id === tabId);
-        const items: any[] = [
-          await MenuItem.new({
-            text: 'New Tab (Ctrl+T)',
-            action: () => handleCreateNewTab('joren://newtab'),
-          }),
-          await MenuItem.new({
-            text: 'Reload (Ctrl+R)',
-            action: () => browserController.reload(),
-          }),
-          await MenuItem.new({
-            text: 'Duplicate Tab',
-            action: () => handleDuplicateTab(tabId),
-          }),
-          await MenuItem.new({
-            text: targetTab?.is_pinned ? 'Unpin Tab' : 'Pin Tab',
-            action: () => handleTogglePinTab(tabId),
-          }),
-          await PredefinedMenuItem.new({ item: 'Separator' }),
-          await MenuItem.new({
-            text: 'Copy Tab URL',
-            action: () => {
-              if (targetTab?.url) navigator.clipboard.writeText(targetTab.url);
-            },
-          }),
-          await MenuItem.new({
-            text: 'Find in Page... (Ctrl+F)',
-            action: () => handleOpenFind(),
-          }),
-          await MenuItem.new({
-            text: 'Print Tab... (Ctrl+P)',
-            action: () => handlePrint(),
-          }),
-          await MenuItem.new({
-            text: 'Toggle Reader Mode (Ctrl+Shift+R)',
-            action: () => handleToggleReaderMode(tabId),
-          }),
-          await MenuItem.new({
-            text: 'Save Page HTML...',
-            action: () => handleSavePageHtml(tabId),
-          }),
-          await PredefinedMenuItem.new({ item: 'Separator' }),
-          await MenuItem.new({
-            text: 'Close Tab (Ctrl+W)',
-            action: () => handleCloseTab(undefined, tabId),
-          }),
-          await MenuItem.new({
-            text: 'Close Other Tabs',
-            action: () => handleCloseOtherTabs(tabId),
-          }),
-          await MenuItem.new({
-            text: 'Close Tabs to Right',
-            action: () => handleCloseTabsToRight(tabId),
-          }),
-          await MenuItem.new({
-            text: 'Reopen Closed Tab (Ctrl+Shift+T)',
-            action: () => handleReopenTab(),
-          }),
-        ];
-
-        const menu = await Menu.new({ items });
-        await menu.popup();
-        return;
-      } catch (err) {
-        console.warn('Native context menu failed:', err);
-      }
-    }
-
     setContextMenu({ x: e.clientX, y: e.clientY, tabId });
-  }, [browserState.tabs, handleCreateNewTab, handleDuplicateTab, handleTogglePinTab, handleOpenFind, handlePrint, handleToggleReaderMode, handleSavePageHtml, handleCloseTab, handleCloseOtherTabs, handleCloseTabsToRight, handleReopenTab]);
+  }, []);
 
-  // 2. History Quick Flyout (Native Tier B Menu)
-  const handleHistoryMenu = useCallback(async (e: React.MouseEvent) => {
+  // 2. History Quick Handler
+  const handleHistoryMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) {
-      handleNavigate(undefined, 'joren://history');
-      return;
-    }
+    handleNavigate(undefined, 'joren://history');
+  }, [handleNavigate]);
 
-    try {
-      const recent = historyList.slice(0, 15);
-      const items: any[] = [
-        await MenuItem.new({
-          text: '🔍 Open History Manager (Ctrl+H)',
-          action: () => handleNavigate(undefined, 'joren://history'),
-        }),
-        await MenuItem.new({
-          text: '🗑️ Clear All Browsing History...',
-          action: async () => {
-            if (confirm('Clear all browsing history?')) {
-              await browserController.clearHistory();
-              fetchHistory();
-            }
-          },
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-      ];
-
-      if (recent.length === 0) {
-        items.push(
-          await MenuItem.new({
-            text: '(No recent history)',
-            enabled: false,
-          })
-        );
-      } else {
-        for (const item of recent) {
-          const display = (item.title || item.url).slice(0, 48);
-          items.push(
-            await MenuItem.new({
-              text: display,
-              action: () => handleNavigate(undefined, item.url),
-            })
-          );
-        }
-      }
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open history native menu:', err);
-      handleNavigate(undefined, 'joren://history');
-    }
-  }, [historyList, handleNavigate, fetchHistory]);
-
-  // 3. Bookmarks Quick Flyout (Native Tier B Menu)
-  const handleBookmarksMenu = useCallback(async (e: React.MouseEvent) => {
+  // 3. Bookmarks Quick Handler
+  const handleBookmarksMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) {
-      handleNavigate(undefined, 'joren://bookmarks');
-      return;
-    }
+    handleNavigate(undefined, 'joren://bookmarks');
+  }, [handleNavigate]);
 
-    try {
-      const items: any[] = [
-        await MenuItem.new({
-          text: isActiveTabBookmarked ? '⭐ Remove Bookmark (Ctrl+D)' : '☆ Bookmark Current Tab (Ctrl+D)',
-          action: () => handleToggleBookmarkActiveTab(),
-        }),
-        await MenuItem.new({
-          text: '📁 Open Bookmark Manager (Ctrl+Shift+O)',
-          action: () => handleNavigate(undefined, 'joren://bookmarks'),
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-      ];
-
-      const recents = bookmarksList.slice(0, 20);
-      if (recents.length === 0) {
-        items.push(
-          await MenuItem.new({
-            text: '(No saved bookmarks)',
-            enabled: false,
-          })
-        );
-      } else {
-        for (const bm of recents) {
-          const display = (bm.title || bm.url).slice(0, 48);
-          items.push(
-            await MenuItem.new({
-              text: display,
-              action: () => handleNavigate(undefined, bm.url),
-            })
-          );
-        }
-      }
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open bookmarks native menu:', err);
-      handleNavigate(undefined, 'joren://bookmarks');
-    }
-  }, [isActiveTabBookmarked, bookmarksList, handleToggleBookmarkActiveTab, handleNavigate]);
-
-  // 4. Downloads Quick Flyout (Native Tier B Menu)
-  const handleDownloadsMenu = useCallback(async (e: React.MouseEvent) => {
+  // 4. Downloads Quick Handler
+  const handleDownloadsMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) {
-      handleNavigate(undefined, 'joren://downloads');
-      return;
-    }
+    handleNavigate(undefined, 'joren://downloads');
+  }, [handleNavigate]);
 
-    try {
-      const items: any[] = [
-        await MenuItem.new({
-          text: '📂 Open Downloads Folder',
-          action: async () => {
-            if (downloadsList.length > 0) {
-              await browserController.showDownloadInFolder(downloadsList[0].id);
-            } else {
-              handleNavigate(undefined, 'joren://downloads');
-            }
-          },
-        }),
-        await MenuItem.new({
-          text: '🗑️ Clear Download Records',
-          action: async () => {
-            await browserController.clearDownloads();
-            fetchDownloads();
-          },
-        }),
-        await MenuItem.new({
-          text: '⬇️ Open Downloads Manager (Ctrl+J)',
-          action: () => handleNavigate(undefined, 'joren://downloads'),
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-      ];
-
-      const recents = downloadsList.slice(0, 10);
-      if (recents.length === 0) {
-        items.push(
-          await MenuItem.new({
-            text: '(No recent downloads)',
-            enabled: false,
-          })
-        );
-      } else {
-        for (const dl of recents) {
-          const statusText = dl.status === 'DOWNLOADING' ? `[${Math.round(dl.progress * 100)}%]` : `[${dl.status}]`;
-          items.push(
-            await MenuItem.new({
-              text: `${statusText} ${dl.filename.slice(0, 36)}`,
-              action: () => browserController.openDownloadedFile(dl.id),
-            })
-          );
-        }
-      }
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open downloads native menu:', err);
-      handleNavigate(undefined, 'joren://downloads');
-    }
-  }, [downloadsList, handleNavigate, fetchDownloads]);
-
-  // 5. Profiles Quick Flyout (Native Tier B Menu)
-  const handleProfilesMenu = useCallback(async (e: React.MouseEvent) => {
+  // 5. Profiles Quick Handler
+  const handleProfilesMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) return;
+    handleNavigate(undefined, 'joren://profiles');
+  }, [handleNavigate]);
 
-    try {
-      const items: any[] = [
-        await MenuItem.new({
-          text: `Active Profile: ${activeProfileName}`,
-          enabled: false,
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-      ];
-
-      for (const p of profilesList) {
-        const isCurrent = p.is_active || p.name === activeProfileName;
-        items.push(
-          await MenuItem.new({
-            text: isCurrent ? `✓ ${p.name}` : `   ${p.name}`,
-            action: async () => {
-              await browserController.switchProfile(p.id);
-              fetchProfiles();
-            },
-          })
-        );
-      }
-
-      items.push(
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({
-          text: '➕ Create New Profile...',
-          action: async () => {
-            const name = prompt('Enter profile name:');
-            if (name && name.trim()) {
-              await browserController.createProfile(name.trim(), 'STANDARD');
-              fetchProfiles();
-            }
-          },
-        })
-      );
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open profiles native menu:', err);
-    }
-  }, [activeProfileName, profilesList, fetchProfiles]);
-
-  // 6. Security / Lock Icon Quick Menu
-  const handleSecurityMenu = useCallback(async (e: React.MouseEvent) => {
+  // 6. Security / Lock Icon Quick Handler
+  const handleSecurityMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) return;
+    handleNavigate(undefined, 'joren://privacy');
+  }, [handleNavigate]);
 
-    try {
-      const isHttps = activeTab?.url?.toLowerCase().startsWith('https://');
-      const isHttp = activeTab?.url?.toLowerCase().startsWith('http://');
-      const domain = activeTab?.url ? new URL(activeTab.url).hostname : 'local';
-
-      const items: any[] = [
-        await MenuItem.new({
-          text: isHttps ? '🔒 Connection is Secure (HTTPS)' : isHttp ? '⚠️ Connection is Not Secure (HTTP)' : 'ℹ️ Internal Browser Page',
-          enabled: false,
-        }),
-        await MenuItem.new({
-          text: `Host: ${domain}`,
-          enabled: false,
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({
-          text: privacyStatus?.enabled !== false ? '🛡️ Tracker Blocker: Active (✓)' : '🛡️ Tracker Blocker: Paused',
-          action: async () => {
-            const next = privacyStatus?.enabled === false;
-            await browserController.togglePrivacyProtection(next);
-            fetchPrivacyStatus(activeTab?.id);
-          },
-        }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({
-          text: `🛡️ Allowlist Domain: ${domain}`,
-          action: async () => {
-            await browserController.allowlistDomain(domain);
-            fetchPrivacyStatus(activeTab?.id);
-          },
-        }),
-      ];
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open security native menu:', err);
-    }
-  }, [activeTab, privacyStatus, fetchPrivacyStatus]);
-
-  // 7. Overflow / More Menu (Native Tier A Menu)
-  const handleOverflowMenu = useCallback(async (e: React.MouseEvent) => {
+  // 7. Overflow / More Menu Handler
+  const handleOverflowMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    if (!isTauri()) return;
-
-    try {
-      // Build search engine submenu items
-      const searchItems: any[] = [];
-      const currentEngine = browserController.getSearchEngineId();
-      for (const [key, engine] of Object.entries(SEARCH_ENGINES)) {
-        const isCurrent = key === currentEngine;
-        searchItems.push(
-          await MenuItem.new({
-            text: isCurrent ? `✓ ${engine.name}` : `   ${engine.name}`,
-            action: () => handleSetSearchEngine(key as SearchEngineId),
-          })
-        );
-      }
-
-      const searchSubmenu = await Submenu.new({
-        text: `Search Engine (${SEARCH_ENGINES[currentEngine]?.name || 'Google'})`,
-        items: searchItems,
-      });
-
-      const currentZoom = Math.round((activeTab?.zoom_level || 1.0) * 100);
-      const zoomSubmenu = await Submenu.new({
-        text: `Zoom (${currentZoom}%)`,
-        items: [
-          await MenuItem.new({ text: 'Zoom In (Ctrl++)', action: () => handleZoomIn() }),
-          await MenuItem.new({ text: 'Zoom Out (Ctrl+-)', action: () => handleZoomOut() }),
-          await MenuItem.new({ text: 'Reset Zoom (Ctrl+0)', action: () => handleZoomReset() }),
-        ],
-      });
-
-      const items: any[] = [
-        await MenuItem.new({ text: 'New Tab (Ctrl+T)', action: () => handleCreateNewTab('joren://newtab') }),
-        await MenuItem.new({ text: 'Reload (Ctrl+R)', action: () => browserController.reload() }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        zoomSubmenu,
-        await MenuItem.new({ text: 'Print Page... (Ctrl+P)', action: () => handlePrint() }),
-        await MenuItem.new({ text: 'Find in Page... (Ctrl+F)', action: () => handleOpenFind() }),
-        await MenuItem.new({ text: 'Toggle Reader Mode (Ctrl+Shift+R)', action: () => handleToggleReaderMode() }),
-        await MenuItem.new({ text: 'Save Page as HTML...', action: () => handleSavePageHtml() }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        await MenuItem.new({ text: 'History (Ctrl+H)', action: () => handleNavigate(undefined, 'joren://history') }),
-        await MenuItem.new({ text: 'Bookmarks (Ctrl+Shift+O)', action: () => handleNavigate(undefined, 'joren://bookmarks') }),
-        await MenuItem.new({ text: 'Downloads (Ctrl+J)', action: () => handleNavigate(undefined, 'joren://downloads') }),
-        await PredefinedMenuItem.new({ item: 'Separator' }),
-        searchSubmenu,
-        await MenuItem.new({ text: '⚙️ Browser Settings', action: () => handleNavigate(undefined, 'joren://settings') }),
-      ];
-
-      const menu = await Menu.new({ items });
-      await menu.popup();
-    } catch (err) {
-      console.warn('Failed to open overflow native menu:', err);
-    }
-  }, [activeTab?.zoom_level, handleSetSearchEngine, handleZoomIn, handleZoomOut, handleZoomReset, handleCreateNewTab, handlePrint, handleOpenFind, handleToggleReaderMode, handleSavePageHtml, handleNavigate]);
+    handleNavigate(undefined, 'joren://settings');
+  }, [handleNavigate]);
 
   // --- Keyboard Shortcuts Matrix Dispatcher ---
   useEffect(() => {
@@ -1965,6 +1619,73 @@ export const BrowserView: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Tab Context Menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-[#0d1527] border border-cyan-500/30 rounded-xl py-1.5 shadow-2xl backdrop-blur-md font-mono text-xs text-slate-200 min-w-[200px]"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => { handleCreateNewTab('joren://newtab'); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-cyan-500/20 hover:text-cyan-300 flex items-center justify-between"
+          >
+            <span>New Tab</span>
+            <span className="text-slate-500 text-[10px]">Ctrl+T</span>
+          </button>
+          <button
+            onClick={() => { browserController.reload(); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-cyan-500/20 hover:text-cyan-300 flex items-center justify-between"
+          >
+            <span>Reload</span>
+            <span className="text-slate-500 text-[10px]">Ctrl+R</span>
+          </button>
+          <button
+            onClick={() => { handleDuplicateTab(contextMenu.tabId); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-cyan-500/20 hover:text-cyan-300"
+          >
+            Duplicate Tab
+          </button>
+          <button
+            onClick={() => { handleTogglePinTab(contextMenu.tabId); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-cyan-500/20 hover:text-cyan-300"
+          >
+            {browserState.tabs.find((t) => t.id === contextMenu.tabId)?.is_pinned ? 'Unpin Tab' : 'Pin Tab'}
+          </button>
+          <div className="h-px bg-white/10 my-1" />
+          <button
+            onClick={() => {
+              const tab = browserState.tabs.find((t) => t.id === contextMenu.tabId);
+              if (tab?.url) navigator.clipboard.writeText(tab.url);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 hover:bg-cyan-500/20 hover:text-cyan-300"
+          >
+            Copy Tab URL
+          </button>
+          <div className="h-px bg-white/10 my-1" />
+          <button
+            onClick={() => { handleCloseTab(undefined, contextMenu.tabId); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-red-500/20 hover:text-red-300 flex items-center justify-between"
+          >
+            <span>Close Tab</span>
+            <span className="text-slate-500 text-[10px]">Ctrl+W</span>
+          </button>
+          <button
+            onClick={() => { handleCloseOtherTabs(contextMenu.tabId); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-red-500/20 hover:text-red-300"
+          >
+            Close Other Tabs
+          </button>
+          <button
+            onClick={() => { handleCloseTabsToRight(contextMenu.tabId); setContextMenu(null); }}
+            className="w-full text-left px-3 py-1.5 hover:bg-red-500/20 hover:text-red-300"
+          >
+            Close Tabs to Right
+          </button>
         </div>
       )}
     </div>

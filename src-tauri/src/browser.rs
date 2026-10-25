@@ -401,7 +401,8 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
 /// real viewport bounding boxes, and detects password fields with zero value leakage.
 const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
 (function() {
-    if (window.__EDITH_OBSERVER_INSTALLED__) return;
+    if (window.__JOREN_OBSERVER_INSTALLED__ || window.__EDITH_OBSERVER_INSTALLED__) return;
+    window.__JOREN_OBSERVER_INSTALLED__ = true;
     window.__EDITH_OBSERVER_INSTALLED__ = true;
 
     function computeElementHash(str) {
@@ -413,7 +414,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
         return Math.abs(hash).toString(36).slice(0, 7);
     }
 
-    window.__EDITH_LIVE_OBSERVE__ = function(scope) {
+    window.__JOREN_LIVE_OBSERVE__ = function(scope) {
         try {
             var doc = document;
             var win = window;
@@ -623,6 +624,7 @@ const LIVE_OBSERVER_INIT_SCRIPT: &str = r#"
             };
         }
     };
+    window.__EDITH_LIVE_OBSERVE__ = window.__JOREN_LIVE_OBSERVE__;
 })();
 "#;
 
@@ -2841,7 +2843,8 @@ pub async fn browser_save_page_html(
 
     // Record in database for downloads list integration
     if let Ok(app_dir) = app.path().app_data_dir() {
-        if let Ok(conn) = crate::db::init_db_at(&app_dir.join("edith_memory.db")) {
+        let db_path = app_dir.join("joren.db");
+        if let Ok(conn) = crate::db::migrate_and_init_db(&db_path, &[app_dir.clone()]) {
             let _ = crate::db::upsert_browser_download(
                 &conn,
                 &crate::db::BrowserDownloadRecord {

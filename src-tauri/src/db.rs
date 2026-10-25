@@ -171,6 +171,37 @@ pub struct DbState {
     pub conn: Mutex<Connection>,
 }
 
+/// Migrates legacy user database (`edith_memory.db`) into the new canonical `joren.db`
+/// destination if `joren.db` does not exist yet. Validates SQLite integrity before finishing.
+pub fn migrate_and_init_db(target_db_path: &PathBuf, legacy_candidate_dirs: &[PathBuf]) -> Result<Connection> {
+    if !target_db_path.exists() {
+        for dir in legacy_candidate_dirs {
+            let legacy_path = dir.join("edith_memory.db");
+            if legacy_path.exists() {
+                println!("[MIGRATION] Found legacy database at: {:?}", legacy_path);
+                // Verify integrity of legacy database before copying
+                if let Ok(legacy_conn) = Connection::open(&legacy_path) {
+                    let integrity: Result<String, _> = legacy_conn.query_row("PRAGMA integrity_check;", [], |r| r.get(0));
+                    if let Ok(ref status) = integrity {
+                        if status == "ok" {
+                            println!("[MIGRATION] Legacy database integrity verified. Copying to {:?}", target_db_path);
+                            if let Some(parent) = target_db_path.parent() {
+                                let _ = fs::create_dir_all(parent);
+                            }
+                            if let Ok(_) = fs::copy(&legacy_path, target_db_path) {
+                                println!("[MIGRATION] Successfully copied legacy database to {:?}", target_db_path);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    init_db_at(target_db_path)
+}
+
 pub fn init_db_at(db_path: &PathBuf) -> Result<Connection> {
     // Create the parent directory if it doesn't exist
     if let Some(parent) = db_path.parent() {
@@ -1792,5 +1823,53 @@ mod tests {
         let healed_states = get_plugin_states(&conn).expect("failed to read healed states");
         assert_eq!(healed_states.get("web_search"), Some(&true));
     }
+
+    #[test]
+    fn test_migrate_legacy_data() {
+        let legacy_dir = std::env::temp_dir().join(format!("edith_legacy_dir_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&legacy_dir);
+        let legacy_db_path = legacy_dir.join("edith_memory.db");
+
+        // Seed legacy database with user settings, notes, and chat session
+        {
+            let conn = Connection::open(&legacy_db_path).expect("failed to open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE personal_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, timestamp TEXT);
+                 CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, timestamp TEXT);
+                 INSERT INTO settings (key, value) VALUES ('userName', 'Agent Tester');
+                 INSERT INTO personal_notes (content, timestamp) VALUES ('Remember to test CEF', '1700000000');
+                 INSERT INTO sessions (id, title, timestamp) VALUES ('sess_1', 'Legacy Chat Session', '1700000000');"
+            ).expect("failed to seed legacy db");
+        }
+
+        let target_dir = std::env::temp_dir().join(format!("joren_target_dir_{}", uuid::Uuid::new_v4()));
+        let target_db_path = target_dir.join("joren.db");
+
+        // Run migration
+        let conn = crate::db::migrate_and_init_db(&target_db_path, &[legacy_dir.clone()]).expect("migrate_and_init_db failed");
+
+        // Verify target database has migrated data
+        let settings = get_all_settings(&conn).expect("get_all_settings failed");
+        assert_eq!(settings.get("userName"), Some(&"Agent Tester".to_string()));
+
+        let notes = get_personal_notes(&conn).expect("get_personal_notes failed");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "Remember to test CEF");
+
+        let sessions = get_sessions(&conn).expect("get_sessions failed");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "Legacy Chat Session");
+
+        // Verify legacy file is still preserved
+        assert!(legacy_db_path.exists(), "Legacy database should NOT be deleted");
+
+        // Cleanup
+        let _ = std::fs::remove_file(&legacy_db_path);
+        let _ = std::fs::remove_dir_all(&legacy_dir);
+        let _ = std::fs::remove_file(&target_db_path);
+        let _ = std::fs::remove_dir_all(&target_dir);
+    }
 }
+
 
