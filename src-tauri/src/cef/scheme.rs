@@ -1,4 +1,4 @@
-use super::api::{cef_string_from_str, cef_string_to_string};
+use super::api::{cef_string_from_str, cef_string_userfree_to_string_and_free};
 use super::types::*;
 use std::ffi::c_void;
 use std::os::raw::c_int;
@@ -35,8 +35,11 @@ impl JorenResourceHandler {
                     has_at_least_one_ref: Some(Self::has_at_least_one_ref),
                 },
                 open: Some(Self::open),
+                process_request: None,
                 get_response_headers: Some(Self::get_response_headers),
+                skip: None,
                 read: Some(Self::read),
+                read_response: None,
                 cancel: Some(Self::cancel),
             },
             response_data: data,
@@ -202,13 +205,12 @@ impl JorenSchemeHandlerFactory {
         }
 
         let req = request.as_ref().unwrap();
-        let url_cef = if let Some(get_url) = req.get_url {
-            get_url(request)
+        let url_str = if let Some(get_url) = req.get_url {
+            let url_userfree = get_url(request);
+            cef_string_userfree_to_string_and_free(url_userfree)
         } else {
             return std::ptr::null_mut();
         };
-
-        let url_str = cef_string_to_string(&url_cef);
 
         // Check if IPC endpoint: joren://app/api/invoke
         if url_str.contains("/api/invoke") {

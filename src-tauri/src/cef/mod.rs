@@ -2,8 +2,8 @@ pub mod api;
 pub mod scheme;
 pub mod types;
 
-use api::{cef_string_from_str, get_cef_api};
-use scheme::{set_command_dispatcher, CommandDispatcher, JorenSchemeHandlerFactory};
+use api::{cef_string_from_str, cef_string_to_string, get_cef_api};
+use scheme::{set_command_dispatcher, JorenSchemeHandlerFactory};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex};
@@ -13,10 +13,43 @@ pub struct BrowserSurfaceController {
     main_window_hwnd: isize,
     browser_tab_hwnd: isize,
     is_browser_visible: bool,
-    bounds: _cef_rect_t,
+    bounds: cef_rect_t,
 }
 
 static SURFACE_CONTROLLER: Mutex<Option<BrowserSurfaceController>> = Mutex::new(None);
+static MAIN_BROWSER: Mutex<Option<usize>> = Mutex::new(None);
+
+pub fn log_startup(stage: &str, details: &str) {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let log_dir = std::path::PathBuf::from(appdata).join("Joren").join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = log_dir.join("startup.log");
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = format!("[{}] [{}] {}\n", now, stage, details);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+    eprintln!("[{}] {}", stage, details);
+}
+
+#[cfg(target_os = "windows")]
+pub fn show_fatal_error_dialog(title: &str, message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let wide_title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    let wide_msg: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide_msg.as_ptr(),
+            wide_title.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn show_fatal_error_dialog(_title: &str, _message: &str) {}
 
 pub fn init_surface_controller(main_hwnd: isize) {
     let mut guard = SURFACE_CONTROLLER.lock().unwrap();
@@ -24,7 +57,7 @@ pub fn init_surface_controller(main_hwnd: isize) {
         main_window_hwnd: main_hwnd,
         browser_tab_hwnd: 0,
         is_browser_visible: false,
-        bounds: _cef_rect_t::default(),
+        bounds: cef_rect_t::default(),
     });
 }
 
@@ -35,7 +68,69 @@ pub fn set_browser_child_hwnd(child_hwnd: isize) {
     }
 }
 
-pub fn update_browser_surface(bounds: Option<_cef_rect_t>, show: bool) {
+pub fn set_main_browser(browser: *mut _cef_browser_t) {
+    let mut guard = MAIN_BROWSER.lock().unwrap();
+    *guard = Some(browser as usize);
+}
+
+pub fn clear_main_browser() {
+    let mut guard = MAIN_BROWSER.lock().unwrap();
+    *guard = None;
+}
+
+pub fn dispatch_event_to_browser(event_name: &str, payload_json: &str) {
+    let guard = MAIN_BROWSER.lock().unwrap();
+    if let Some(browser_ptr) = *guard {
+        unsafe {
+            let browser = browser_ptr as *mut _cef_browser_t;
+            if !browser.is_null() {
+                let b = &*browser;
+                if let Some(get_frame) = b.get_main_frame {
+                    let frame = get_frame(browser);
+                    if !frame.is_null() {
+                        let f = &*frame;
+                        if let Some(exec_js) = f.execute_java_script {
+                            let script = format!(
+                                "window.dispatchEvent(new CustomEvent('joren-event', {{ detail: {{ event: {}, payload: {} }} }}));",
+                                serde_json::to_string(event_name).unwrap_or_else(|_| "\"\"".to_string()),
+                                payload_json
+                            );
+                            let cef_code = cef_string_from_str(&script);
+                            let cef_url = cef_string_from_str("joren://app/event");
+                            exec_js(frame, &cef_code, &cef_url, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn update_browser_surface_size(width: i32, height: i32) {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        };
+
+        let guard = SURFACE_CONTROLLER.lock().unwrap();
+        if let Some(ctrl) = guard.as_ref() {
+            if ctrl.browser_tab_hwnd != 0 && width > 0 && height > 0 {
+                SetWindowPos(
+                    ctrl.browser_tab_hwnd as *mut c_void,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
+}
+
+pub fn update_browser_surface(bounds: Option<cef_rect_t>, show: bool) {
     #[cfg(target_os = "windows")]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -69,6 +164,249 @@ pub fn update_browser_surface(bounds: Option<_cef_rect_t>, show: bool) {
     }
 }
 
+pub struct JorenLifeSpanHandler {
+    pub base: _cef_life_span_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenLifeSpanHandler {
+    pub fn new() -> *mut _cef_life_span_handler_t {
+        let mut base: _cef_life_span_handler_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_life_span_handler_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_after_created = Some(Self::on_after_created);
+        base.do_close = Some(Self::do_close);
+        base.on_before_close = Some(Self::on_before_close);
+
+        let handler = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(handler) as *mut _cef_life_span_handler_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_after_created(
+        _self: *mut _cef_life_span_handler_t,
+        browser: *mut _cef_browser_t,
+    ) {
+        if !browser.is_null() {
+            set_main_browser(browser);
+            let b = &*browser;
+            if let Some(get_host) = b.get_host {
+                let host = get_host(browser);
+                if !host.is_null() {
+                    let h = &*host;
+                    if let Some(get_win) = h.get_window_handle {
+                        let child_hwnd = get_win(host);
+                        log_startup("BROWSER", &format!("Browser created successfully. Child HWND: {:?}", child_hwnd.0));
+                        set_browser_child_hwnd(child_hwnd.0 as isize);
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe extern "C" fn do_close(
+        _self: *mut _cef_life_span_handler_t,
+        _browser: *mut _cef_browser_t,
+    ) -> c_int {
+        0
+    }
+
+    unsafe extern "C" fn on_before_close(
+        _self: *mut _cef_life_span_handler_t,
+        _browser: *mut _cef_browser_t,
+    ) {
+        log_startup("BROWSER", "Browser window is closing.");
+        clear_main_browser();
+    }
+}
+
+pub struct JorenLoadHandler {
+    pub base: _cef_load_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenLoadHandler {
+    pub fn new() -> *mut _cef_load_handler_t {
+        let mut base: _cef_load_handler_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_load_handler_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_load_end = Some(Self::on_load_end);
+        base.on_load_error = Some(Self::on_load_error);
+
+        let handler = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(handler) as *mut _cef_load_handler_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_load_end(
+        _self: *mut _cef_load_handler_t,
+        _browser: *mut _cef_browser_t,
+        frame: *mut _cef_frame_t,
+        http_status_code: c_int,
+    ) {
+        if !frame.is_null() {
+            let f = &*frame;
+            if let Some(is_main) = f.is_main {
+                if is_main(frame) != 0 {
+                    log_startup("LOAD", &format!("Main UI page loaded successfully (HTTP status: {})", http_status_code));
+                }
+            }
+        }
+    }
+
+    unsafe extern "C" fn on_load_error(
+        _self: *mut _cef_load_handler_t,
+        _browser: *mut _cef_browser_t,
+        _frame: *mut _cef_frame_t,
+        error_code: cef_errorcode_t,
+        error_text: *const cef_string_t,
+        failed_url: *const cef_string_t,
+    ) {
+        let err_str = if !error_text.is_null() {
+            cef_string_to_string(&*error_text)
+        } else {
+            String::new()
+        };
+        let url_str = if !failed_url.is_null() {
+            cef_string_to_string(&*failed_url)
+        } else {
+            String::new()
+        };
+        log_startup("LOAD_ERROR", &format!("Load error code {:?}: {} URL: {}", error_code, err_str, url_str));
+    }
+}
+
+pub struct JorenCefClient {
+    pub base: _cef_client_t,
+    pub life_span: *mut _cef_life_span_handler_t,
+    pub load: *mut _cef_load_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenCefClient {
+    pub fn new() -> *mut _cef_client_t {
+        let life_span = JorenLifeSpanHandler::new();
+        let load = JorenLoadHandler::new();
+        let mut base: _cef_client_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_client_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.get_life_span_handler = Some(Self::get_life_span_handler);
+        base.get_load_handler = Some(Self::get_load_handler);
+
+        let client = Box::new(Self {
+            base,
+            life_span,
+            load,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(client) as *mut _cef_client_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn get_life_span_handler(self_: *mut _cef_client_t) -> *mut _cef_life_span_handler_t {
+        let this = (self_ as *mut Self).as_ref().unwrap();
+        this.life_span
+    }
+
+    unsafe extern "C" fn get_load_handler(self_: *mut _cef_client_t) -> *mut _cef_load_handler_t {
+        let this = (self_ as *mut Self).as_ref().unwrap();
+        this.load
+    }
+}
+
 /// Official CEF Entry Point exported by joren.dll
 /// Called by bootstrap.exe (renamed to joren.exe) with Windows Sandbox context
 #[no_mangle]
@@ -77,27 +415,42 @@ pub unsafe extern "system" fn RunWinMain(
     _lp_cmd_line: *const u16,
     _n_cmd_show: i32,
     sandbox_info: *mut c_void,
-    _version_info: *const c_void,
+    version_info: *const c_void,
 ) -> i32 {
+    log_startup("BOOTSTRAP", "RunWinMain entered from bootstrap.exe launcher.");
+
     // -------------------------------------------------------------
     // MANDATORY SECURITY GATE: Fail-Closed if sandbox_info is NULL
     // -------------------------------------------------------------
     if sandbox_info.is_null() {
-        eprintln!("[FATAL SECURITY ERROR] CEF Windows sandbox is REQUIRED but sandbox_info was NULL!");
-        eprintln!("[SECURITY GATE] Failing closed: Application will NOT start unsandboxed.");
+        let err_msg = "CEF Windows sandbox is REQUIRED but sandbox_info was NULL.\nApplication will NOT start unsandboxed.\nPlease launch via joren.exe.";
+        log_startup("SECURITY", err_msg);
+        show_fatal_error_dialog("Joren Security Error", err_msg);
         return 1;
+    }
+
+    // Inspect version_info
+    if !version_info.is_null() {
+        let v = &*(version_info as *const cef_version_info_t);
+        log_startup("VERSION", &format!(
+            "CEF: {}.{}.{} (commit {}) | Chrome: {}.{}.{}.{}",
+            v.cef_version_major, v.cef_version_minor, v.cef_version_patch, v.cef_commit_number,
+            v.chrome_version_major, v.chrome_version_minor, v.chrome_version_build, v.chrome_version_patch
+        ));
     }
 
     let api = match get_cef_api() {
         Some(a) => a,
         None => {
-            eprintln!("[FATAL ERROR] Could not load CEF API from libcef.dll.");
+            let msg = "Could not load required symbols from libcef.dll.\nPlease verify libcef.dll exists in application directory.";
+            log_startup("LOAD_ERROR", msg);
+            show_fatal_error_dialog("Joren Runtime Error", msg);
             return 1;
         }
     };
 
-    let main_args = _cef_main_args_t {
-        instance: h_instance,
+    let main_args = cef_main_args_t {
+        instance: HINSTANCE(h_instance as *mut c_void),
     };
 
     // Subprocess execution: handles renderer, gpu, utility, etc.
@@ -109,11 +462,19 @@ pub unsafe extern "system" fn RunWinMain(
     // -------------------------------------------------------------
     // Main Browser Process Initialization
     // -------------------------------------------------------------
-    let mut settings: _cef_settings_t = std::mem::zeroed();
-    settings.size = std::mem::size_of::<_cef_settings_t>();
-    settings.no_sandbox = 0; // 0 = Sandbox ENABLED
-    settings.multi_threaded_message_loop = 0; // Use standard message loop
-    settings.chrome_runtime = 0;
+    let mut settings: cef_settings_t = std::mem::zeroed();
+    settings.size = std::mem::size_of::<cef_settings_t>();
+    settings.no_sandbox = 0; // 0 = Sandbox ENABLED (Mandatory)
+    settings.multi_threaded_message_loop = 0; // Standard message pump
+    settings.background_color = 0xFF121417;
+
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let cef_log_path = std::path::PathBuf::from(&appdata).join("Joren").join("logs").join("cef.log");
+    if let Some(parent) = cef_log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    settings.log_file = cef_string_from_str(&cef_log_path.to_string_lossy());
+    settings.log_severity = cef_log_severity_t::LOGSEVERITY_INFO;
 
     let init_res = (api.initialize)(
         &main_args,
@@ -123,15 +484,63 @@ pub unsafe extern "system" fn RunWinMain(
     );
 
     if init_res == 0 {
-        eprintln!("[FATAL ERROR] cef_initialize failed.");
+        let msg = "CEF initialization (cef_initialize) failed.";
+        log_startup("INIT_ERROR", msg);
+        show_fatal_error_dialog("Joren Runtime Error", msg);
         return 1;
     }
+    log_startup("INIT", "cef_initialize succeeded.");
 
-    // Register custom scheme: joren://
+    // Register custom scheme: joren://app
     let scheme_name = cef_string_from_str("joren");
     let domain_name = cef_string_from_str("app");
     let factory = JorenSchemeHandlerFactory::new();
     (api.register_scheme_handler_factory)(&scheme_name, &domain_name, factory);
+    log_startup("SCHEME", "Registered scheme joren://app");
+
+    // Initialize backend core (database, settings, providers, tools, voice)
+    let app_handle = tauri::AppHandle::default();
+    let core = match crate::core::JorenCore::initialize(&app_handle) {
+        Ok(c) => Arc::new(c),
+        Err(err) => {
+            let msg = format!("Failed to initialize backend services:\n{}", err);
+            log_startup("CORE_ERROR", &msg);
+            show_fatal_error_dialog("Joren Backend Error", &msg);
+            return 1;
+        }
+    };
+    log_startup("CORE", "Backend core services initialized.");
+
+    // Wire command dispatcher to scheme handler
+    let core_dispatch = core.clone();
+    scheme::set_command_dispatcher(Arc::new(move |cmd, args| {
+        core_dispatch.dispatch(cmd, args)
+    }));
+    log_startup("IPC", "IPC command dispatcher registered.");
+
+    // Wire native event dispatcher
+    app_handle.set_event_dispatcher(|event, payload| {
+        dispatch_event_to_browser(event, payload);
+    });
+
+    // Check for --smoke-test CLI flag
+    let is_smoke_test = std::env::args().any(|arg| arg == "--smoke-test");
+    if is_smoke_test {
+        log_startup("SMOKE_TEST", "Executing smoke test verification...");
+        match core.dispatch("ping", &serde_json::json!({})) {
+            Ok(val) => {
+                log_startup("SMOKE_TEST", &format!("Smoke test ping succeeded: {}", val));
+                log_startup("SMOKE_TEST", "All smoke test checks PASSED cleanly.");
+                (api.shutdown)();
+                return 0;
+            }
+            Err(e) => {
+                log_startup("SMOKE_TEST", &format!("Smoke test ping FAILED: {}", e));
+                (api.shutdown)();
+                return 1;
+            }
+        }
+    }
 
     // Initialize Win32 Host Window
     #[cfg(target_os = "windows")]
@@ -154,7 +563,9 @@ pub unsafe extern "system" fn RunWinMain(
 
             match msg {
                 WM_SIZE => {
-                    // Update layout
+                    let width = (lparam & 0xFFFF) as i32;
+                    let height = ((lparam >> 16) & 0xFFFF) as i32;
+                    update_browser_surface_size(width, height);
                     0
                 }
                 WM_CLOSE => {
@@ -210,32 +621,42 @@ pub unsafe extern "system" fn RunWinMain(
         ShowWindow(main_hwnd, SW_SHOW);
 
         // Create main UI browser window attached to host HWND
-        let mut win_info: _cef_window_info_t = std::mem::zeroed();
-        win_info.parent_window = main_hwnd as isize;
+        let mut win_info: cef_window_info_t = std::mem::zeroed();
+        win_info.size = std::mem::size_of::<cef_window_info_t>();
+        win_info.parent_window = cef_window_handle_t(main_hwnd as *mut c_void);
         win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
-        win_info.bounds = _cef_rect_t {
+        win_info.bounds = cef_rect_t {
             x: 0,
             y: 0,
             width: 1400,
             height: 900,
         };
 
-        let mut b_settings: _cef_browser_settings_t = std::mem::zeroed();
-        b_settings.size = std::mem::size_of::<_cef_browser_settings_t>();
-        b_settings.javascript = 1;
-        b_settings.local_storage = 1;
-        b_settings.databases = 1;
+        let mut b_settings: cef_browser_settings_t = std::mem::zeroed();
+        b_settings.size = std::mem::size_of::<cef_browser_settings_t>();
+        b_settings.javascript = cef_state_t::STATE_ENABLED;
+        b_settings.local_storage = cef_state_t::STATE_ENABLED;
+        b_settings.databases = cef_state_t::STATE_ENABLED;
+        b_settings.webgl = cef_state_t::STATE_ENABLED;
 
         let app_url = cef_string_from_str("joren://app/index.html");
+        let client = JorenCefClient::new();
 
-        (api.browser_host_create_browser)(
+        let created = (api.browser_host_create_browser)(
             &win_info,
-            std::ptr::null_mut(),
+            client,
             &app_url,
             &b_settings,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         );
+
+        if created == 0 {
+            log_startup("BROWSER_ERROR", "cef_browser_host_create_browser returned 0.");
+            show_fatal_error_dialog("Joren Browser Error", "Failed to create main browser window.");
+            return 1;
+        }
+        log_startup("BROWSER", "Browser creation initiated.");
     }
 
     // Enter standard CEF message loop
@@ -243,6 +664,7 @@ pub unsafe extern "system" fn RunWinMain(
 
     // Clean shutdown
     (api.shutdown)();
+    log_startup("SHUTDOWN", "Application exited cleanly.");
 
     0
 }

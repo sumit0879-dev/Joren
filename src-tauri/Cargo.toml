@@ -38,6 +38,7 @@ base64 = "0.22.1"
 sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
+cef-dll-sys = { version = "156.3.0", features = ["dox"] }
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

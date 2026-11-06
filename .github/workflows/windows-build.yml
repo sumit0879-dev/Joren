@@ -73,14 +73,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: cef-dist
-          key: cef-windows64-156.0.14-v1
+          key: cef-windows64-156.0.15-v1
 
       - name: Download & Extract CEF Distribution (if cache missed)
         if: steps.cache-cef.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path cef-dist | Out-Null
-          $url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.14%2Bg4fa4ab5%2Bchromium-156.0.8078.48_windows64.tar.bz2"
+          $url = "https://cef-builds.spotifycdn.com/cef_binary_156.0.15%2Bgcf671c0%2Bchromium-156.0.8078.80_windows64.tar.bz2"
           Write-Host "Downloading CEF distribution: $url"
           curl.exe -sSL --retry 3 --retry-delay 5 $url -o cef_archive.tar.bz2
           Write-Host "Extracting CEF distribution..."
@@ -129,22 +129,64 @@ jobs:
           Copy-Item "cef-dist\Resources\*.*" -Destination "staging\joren\" -Force
           Copy-Item "cef-dist\Resources\locales\*.*" -Destination "staging\joren\locales\" -Force
 
-          # 4. Bundled frontend React build
+          # 4. Stage MSVC Runtime CRT DLLs
+          $crtDirs = Get-ChildItem "C:\Program Files*\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -ErrorAction SilentlyContinue
+          if ($crtDirs) {
+              $crtDir = $crtDirs | Select-Object -First 1 -ExpandProperty FullName
+              Write-Host "Found MSVC CRT directory: $crtDir"
+              Copy-Item "$crtDir\*.dll" -Destination "staging\joren\" -Force
+          } else {
+              Write-Host "Searching system for MSVC CRT DLLs..."
+              $crtFiles = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
+              foreach ($f in $crtFiles) {
+                  $found = (Get-ChildItem "C:\Program Files*" -Recurse -Filter $f -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                  if ($found) {
+                      Copy-Item $found -Destination "staging\joren\" -Force
+                      Write-Host "Staged CRT $f from $found"
+                  }
+              }
+          }
+
+          # 5. Bundled frontend React build
           Copy-Item -Recurse -Force "build\*" -Destination "staging\joren\app\"
           Write-Host "Staged React frontend build to app/"
 
-          # 5. Local LLM assets (preserved)
+          # 6. Local LLM assets (preserved)
           if (Test-Path "Llama") {
               Copy-Item -Recurse -Force "Llama" -Destination "staging\joren\Llama"
               Write-Host "Preserved and staged Llama local LLM assets"
           }
 
-          # 6. License
+          # 7. License
           if (Test-Path "LICENSE") {
               Copy-Item "LICENSE" -Destination "staging\joren\LICENSE"
           }
 
           Write-Host "Package staging complete. File count: $((Get-ChildItem -Recurse staging\joren).Count)"
+
+      - name: Run Sandboxed Native Launch Smoke Test
+        shell: pwsh
+        run: |
+          Write-Host "Starting sandboxed native launch smoke test on staged executable..."
+          $proc = Start-Process -FilePath "staging\joren\joren.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          Write-Host "Smoke test process exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "Smoke test FAILED with exit code $($proc.ExitCode)"
+              if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
+                  Write-Host "=== startup.log ==="
+                  Get-Content "$env:APPDATA\Joren\logs\startup.log"
+              }
+              if (Test-Path "$env:APPDATA\Joren\logs\cef.log") {
+                  Write-Host "=== cef.log ==="
+                  Get-Content "$env:APPDATA\Joren\logs\cef.log"
+              }
+              exit 1
+          }
+          Write-Host "Native smoke test PASSED cleanly with exit code 0."
+          if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
+              Write-Host "=== startup.log ==="
+              Get-Content "$env:APPDATA\Joren\logs\startup.log"
+          }
 
       - name: Setup NSIS Compiler
         shell: pwsh

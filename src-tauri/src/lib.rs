@@ -2,7 +2,7 @@ use crate::ai::CredentialStore;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use tauri::Manager;
-mod agent;
+pub mod agent;
 pub mod ai;
 pub mod browser;
 pub mod browser_agent;
@@ -15,27 +15,28 @@ pub mod browser_recovery;
 pub mod browser_risk;
 pub mod browser_storage;
 pub mod browser_tools;
-mod chat;
+pub mod chat;
 pub mod computer_control;
 pub mod conversation;
 pub mod db;
 pub mod embedding;
 pub mod events;
-mod llm;
-mod memory;
-mod plugins;
+pub mod llm;
+pub mod memory;
+pub mod plugins;
 pub mod policy;
-mod providers;
+pub mod providers;
 pub mod runtime;
 pub mod screen;
 pub mod security;
 pub mod task;
 pub mod tools;
-mod tts;
+pub mod tts;
 pub mod voice;
 pub mod weather;
 pub mod windows;
 pub mod cef;
+pub mod core;
 pub use cef::RunWinMain;
 
 use db::DbState;
@@ -43,7 +44,7 @@ use std::collections::HashMap;
 use tauri::State;
 
 #[tauri::command]
-async fn transcribe_audio(
+pub async fn transcribe_audio(
     samples: Vec<f32>,
     sample_rate: u32,
     language: Option<String>,
@@ -82,7 +83,7 @@ async fn transcribe_audio(
 }
 
 #[tauri::command]
-fn agent_resolve_proposal(
+pub fn agent_resolve_proposal(
     proposal_id: String,
     session_id: Option<String>,
     action: String,
@@ -92,7 +93,7 @@ fn agent_resolve_proposal(
 }
 
 #[tauri::command]
-fn get_base_dir() -> Result<String, String> {
+pub fn get_base_dir() -> Result<String, String> {
     let mut dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if dir.ends_with("src-tauri") {
         dir.pop();
@@ -101,19 +102,19 @@ fn get_base_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn get_all_settings(state: State<'_, DbState>) -> Result<HashMap<String, String>, String> {
+pub fn get_all_settings(state: State<'_, DbState>) -> Result<HashMap<String, String>, String> {
     let conn = state.conn.lock().unwrap();
     db::get_all_settings(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn save_setting(key: String, value: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn save_setting(key: String, value: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     db::save_setting(&conn, &key, &value).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn sync_settings(
+pub fn sync_settings(
     settings: HashMap<String, String>,
     state: State<'_, DbState>,
 ) -> Result<(), String> {
@@ -125,13 +126,13 @@ fn sync_settings(
 }
 
 #[tauri::command]
-fn get_all_sessions(state: State<'_, DbState>) -> Result<Vec<db::Session>, String> {
+pub fn get_all_sessions(state: State<'_, DbState>) -> Result<Vec<db::Session>, String> {
     let conn = state.conn.lock().unwrap();
     db::get_all_sessions(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn create_session(
+pub fn create_session(
     session_id: String,
     title: String,
     state: State<'_, DbState>,
@@ -141,13 +142,13 @@ fn create_session(
 }
 
 #[tauri::command]
-fn delete_session(session_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_session(session_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     db::delete_session(&conn, &session_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn rename_session(
+pub fn rename_session(
     session_id: String,
     new_title: String,
     state: State<'_, DbState>,
@@ -157,7 +158,7 @@ fn rename_session(
 }
 
 #[tauri::command]
-fn get_session_messages(
+pub fn get_session_messages(
     session_id: String,
     state: State<'_, DbState>,
 ) -> Result<Vec<db::Message>, String> {
@@ -166,7 +167,7 @@ fn get_session_messages(
 }
 
 #[tauri::command]
-fn save_session_message(
+pub fn save_session_message(
     session_id: String,
     role: String,
     text: String,
@@ -178,31 +179,31 @@ fn save_session_message(
 }
 
 #[tauri::command]
-fn get_personal_notes(state: State<'_, DbState>) -> Result<Vec<db::Note>, String> {
+pub fn get_personal_notes(state: State<'_, DbState>) -> Result<Vec<db::Note>, String> {
     let conn = state.conn.lock().unwrap();
     db::get_personal_notes(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn save_personal_note(content: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn save_personal_note(content: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     db::save_personal_note(&conn, &content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_personal_note(note_id: String, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_personal_note(note_id: String, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     db::delete_personal_note(&conn, &note_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn get_custom_apps(state: State<'_, DbState>) -> Result<Vec<db::CustomApp>, String> {
+pub fn get_custom_apps(state: State<'_, DbState>) -> Result<Vec<db::CustomApp>, String> {
     let conn = state.conn.lock().unwrap();
     db::get_custom_apps(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn add_custom_app(
+pub fn add_custom_app(
     name: String,
     path: String,
     keywords: String,
@@ -213,26 +214,26 @@ fn add_custom_app(
 }
 
 #[tauri::command]
-fn delete_custom_app(app_id: i32, state: State<'_, DbState>) -> Result<(), String> {
+pub fn delete_custom_app(app_id: i32, state: State<'_, DbState>) -> Result<(), String> {
     let conn = state.conn.lock().unwrap();
     db::delete_custom_app(&conn, app_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn sync_apps_registry() -> Result<(), String> {
+pub fn sync_apps_registry() -> Result<(), String> {
     // No-op: custom apps are already stored in SQLite via add_custom_app/delete_custom_app
     // This exists for frontend compatibility
     Ok(())
 }
 
 #[tauri::command]
-fn launch_app(path: String, state: State<'_, DbState>) -> Result<String, String> {
+pub fn launch_app(path: String, state: State<'_, DbState>) -> Result<String, String> {
     let conn = state.conn.lock().unwrap();
     security::AppLauncherPolicy::validate_and_launch(&path, Some(&conn))
 }
 
 #[tauri::command]
-fn ai_list_providers(db_state: State<'_, DbState>) -> Result<Vec<ai::ProviderSummary>, String> {
+pub fn ai_list_providers(db_state: State<'_, DbState>) -> Result<Vec<ai::ProviderSummary>, String> {
     let mut registry = ai::ProviderRegistry::standard_builtins();
     if let Ok(conn) = db_state.conn.lock() {
         if let Ok(settings) = db::get_all_settings(&conn) {
@@ -245,7 +246,7 @@ fn ai_list_providers(db_state: State<'_, DbState>) -> Result<Vec<ai::ProviderSum
 }
 
 #[tauri::command]
-fn ai_list_models(
+pub fn ai_list_models(
     provider_id: String,
     db_state: State<'_, DbState>,
 ) -> Result<Vec<ai::ModelMetadata>, String> {
@@ -263,7 +264,7 @@ fn ai_list_models(
 }
 
 #[tauri::command]
-fn ai_query_capabilities(
+pub fn ai_query_capabilities(
     provider_id: String,
     model_id: Option<String>,
     db_state: State<'_, DbState>,
@@ -282,7 +283,7 @@ fn ai_query_capabilities(
 }
 
 #[tauri::command]
-async fn conversation_submit_turn(
+pub async fn conversation_submit_turn(
     session_id: String,
     message: String,
     provider_id: Option<String>,
@@ -303,7 +304,7 @@ async fn conversation_submit_turn(
 }
 
 #[tauri::command]
-async fn conversation_execute_turn(
+pub async fn conversation_execute_turn(
     turn_id: String,
     _stream_id: Option<String>,
     app_settings: Option<serde_json::Value>,
@@ -328,7 +329,7 @@ async fn conversation_execute_turn(
 }
 
 #[tauri::command]
-async fn conversation_cancel_turn(
+pub async fn conversation_cancel_turn(
     turn_id: String,
     reason: Option<String>,
     core: State<'_, conversation::ConversationCore>,
@@ -340,7 +341,7 @@ async fn conversation_cancel_turn(
 }
 
 #[tauri::command]
-async fn conversation_get_turn_status(
+pub async fn conversation_get_turn_status(
     turn_id: String,
     core: State<'_, conversation::ConversationCore>,
 ) -> Result<Option<conversation::TurnSnapshot>, String> {
@@ -349,7 +350,7 @@ async fn conversation_get_turn_status(
 }
 
 #[tauri::command]
-async fn task_create(
+pub async fn task_create(
     task_type: String,
     goal: String,
     session_id: Option<String>,
@@ -373,7 +374,7 @@ async fn task_create(
 }
 
 #[tauri::command]
-async fn task_cancel(
+pub async fn task_cancel(
     task_id: String,
     reason: Option<String>,
     task_runtime: State<'_, task::TaskRuntime>,
@@ -386,7 +387,7 @@ async fn task_cancel(
 }
 
 #[tauri::command]
-async fn task_get_status(
+pub async fn task_get_status(
     task_id: String,
     task_runtime: State<'_, task::TaskRuntime>,
 ) -> Result<Option<task::TaskSnapshot>, String> {
@@ -395,14 +396,14 @@ async fn task_get_status(
 }
 
 #[tauri::command]
-async fn task_list_active(
+pub async fn task_list_active(
     task_runtime: State<'_, task::TaskRuntime>,
 ) -> Result<Vec<task::TaskSnapshot>, String> {
     Ok(task_runtime.list_active_tasks().await)
 }
 
 #[tauri::command]
-async fn policy_evaluate_action(
+pub async fn policy_evaluate_action(
     request: policy::ActionRequest,
     context: policy::PolicyContext,
     policy_engine: State<'_, policy::PolicyEngine>,
@@ -411,14 +412,14 @@ async fn policy_evaluate_action(
 }
 
 #[tauri::command]
-async fn policy_list_pending_approvals(
+pub async fn policy_list_pending_approvals(
     policy_engine: State<'_, policy::PolicyEngine>,
 ) -> Result<Vec<policy::ApprovalRequest>, String> {
     Ok(policy_engine.list_pending_approvals().await)
 }
 
 #[tauri::command]
-async fn policy_resolve_approval(
+pub async fn policy_resolve_approval(
     approval_id: String,
     decision: policy::OperatorDecision,
     policy_engine: State<'_, policy::PolicyEngine>,
@@ -427,7 +428,7 @@ async fn policy_resolve_approval(
 }
 
 #[tauri::command]
-async fn policy_get_audit_log(
+pub async fn policy_get_audit_log(
     limit: Option<usize>,
     policy_engine: State<'_, policy::PolicyEngine>,
 ) -> Result<Vec<policy::AuditRecord>, String> {
@@ -435,14 +436,14 @@ async fn policy_get_audit_log(
 }
 
 #[tauri::command]
-fn tools_list_definitions(
+pub fn tools_list_definitions(
     registry: State<'_, tools::ToolRegistry>,
 ) -> Result<Vec<tools::ToolDefinition>, String> {
     Ok(registry.list())
 }
 
 #[tauri::command]
-fn tools_get_definition(
+pub fn tools_get_definition(
     name: String,
     registry: State<'_, tools::ToolRegistry>,
 ) -> Result<Option<tools::ToolDefinition>, String> {
@@ -450,7 +451,7 @@ fn tools_get_definition(
 }
 
 #[tauri::command]
-async fn tools_execute(
+pub async fn tools_execute(
     request: tools::ToolRequest,
     router: State<'_, tools::ToolRouter>,
 ) -> Result<tools::ToolExecutionResult, String> {
@@ -458,7 +459,7 @@ async fn tools_execute(
 }
 
 #[tauri::command]
-async fn tools_cancel_execution(
+pub async fn tools_cancel_execution(
     execution_id: String,
     router: State<'_, tools::ToolRouter>,
 ) -> Result<bool, String> {
@@ -466,7 +467,7 @@ async fn tools_cancel_execution(
 }
 
 #[tauri::command]
-async fn runtime_get_status(
+pub async fn runtime_get_status(
     session_id: Option<String>,
     runtime_state: State<'_, runtime::EdithRuntimeState>,
 ) -> Result<runtime::RuntimeStatusSummary, String> {
@@ -474,7 +475,7 @@ async fn runtime_get_status(
 }
 
 #[tauri::command]
-async fn runtime_get_capabilities(
+pub async fn runtime_get_capabilities(
     domain: Option<String>,
     runtime_state: State<'_, runtime::EdithRuntimeState>,
 ) -> Result<runtime::CapabilitiesSummary, String> {
@@ -482,7 +483,7 @@ async fn runtime_get_capabilities(
 }
 
 #[tauri::command]
-async fn voice_session_start(
+pub async fn voice_session_start(
     conversation_id: String,
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<String, String> {
@@ -495,7 +496,7 @@ async fn voice_session_start(
 }
 
 #[tauri::command]
-async fn voice_session_submit_transcript(
+pub async fn voice_session_submit_transcript(
     session_id: String,
     transcript: String,
     confidence: Option<f32>,
@@ -528,7 +529,7 @@ async fn voice_session_submit_transcript(
 }
 
 #[tauri::command]
-async fn voice_session_cancel(
+pub async fn voice_session_cancel(
     session_id: String,
     reason: Option<String>,
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
@@ -541,21 +542,21 @@ async fn voice_session_cancel(
 }
 
 #[tauri::command]
-async fn voice_stop_playback(
+pub async fn voice_stop_playback(
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<(), String> {
     controller.stop_playback().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn voice_get_status(
+pub async fn voice_get_status(
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<voice::VoiceStatusSummary, String> {
     Ok(controller.status_summary().await)
 }
 
 #[tauri::command]
-async fn realtime_voice_start(
+pub async fn realtime_voice_start(
     conversation_id: String,
     provider_id: Option<String>,
     engine: State<'_, std::sync::Arc<voice::RealtimeVoiceEngine>>,
@@ -572,28 +573,28 @@ async fn realtime_voice_start(
 }
 
 #[tauri::command]
-async fn realtime_voice_stop(
+pub async fn realtime_voice_stop(
     engine: State<'_, std::sync::Arc<voice::RealtimeVoiceEngine>>,
 ) -> Result<(), String> {
     engine.stop_session().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn realtime_voice_get_status(
+pub async fn realtime_voice_get_status(
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<voice::VoiceStatusSummary, String> {
     Ok(controller.status_summary().await)
 }
 
 #[tauri::command]
-async fn voice_list_devices(
+pub async fn voice_list_devices(
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<voice::AudioDevicesSummary, String> {
     controller.list_devices().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn voice_set_input_device(
+pub async fn voice_set_input_device(
     device_id: Option<String>,
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<(), String> {
@@ -603,7 +604,7 @@ async fn voice_set_input_device(
 }
 
 #[tauri::command]
-async fn voice_set_output_device(
+pub async fn voice_set_output_device(
     device_id: Option<String>,
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<(), String> {
@@ -613,7 +614,7 @@ async fn voice_set_output_device(
 }
 
 #[tauri::command]
-async fn voice_get_device_status(
+pub async fn voice_get_device_status(
     controller: State<'_, std::sync::Arc<voice::VoiceController>>,
 ) -> Result<voice::AudioDevicesSummary, String> {
     controller.list_devices().map_err(|e| e.to_string())
@@ -623,124 +624,12 @@ async fn voice_get_device_status(
 pub fn run() {
     let app = tauri::Builder::default()
         .setup(|app| {
-            let app_data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
-            std::fs::create_dir_all(&app_data_dir).map_err(|e| e.to_string())?;
-            let db_path = app_data_dir.join("joren.db");
-            let legacy_dirs = vec![
-                app_data_dir.clone(),
-                std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("com.edith.desktop"),
-                std::path::PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("EDITH"),
-            ];
-            let conn = db::migrate_and_init_db(&db_path, &legacy_dirs).map_err(|e| e.to_string())?;
-            let conn2 = db::init_db_at(&db_path).map_err(|e| e.to_string())?;
-            app.manage(DbState {
-                conn: std::sync::Mutex::new(conn),
-            });
-            app.manage(agent::AgentState {
-                path: std::sync::Mutex::new(String::new()),
-            });
-            app.manage(browser::BrowserState::default());
-            app.manage(browser_agent::BrowserAgentManager::default());
-
-            let emitter = events::EventEmitter::new(app.handle().clone());
-            let task_runtime = task::TaskRuntime::new(emitter.clone());
-            let registry = ai::ProviderRegistry::standard_builtins();
-            let conn2_arc = std::sync::Arc::new(std::sync::Mutex::new(conn2));
-            let conversation_core = conversation::ConversationCore::new(
-                registry,
-                emitter.clone(),
-                Some(conn2_arc.clone()),
-                None,
-            );
-            let policy_engine = policy::PolicyEngine::new(Some(emitter.clone()));
-            let task_runtime_arc = std::sync::Arc::new(task_runtime.clone());
-            let conversation_core_arc = std::sync::Arc::new(conversation_core.clone());
-            let policy_engine_arc = std::sync::Arc::new(policy_engine.clone());
-
-            let tool_registry = tools::ToolRegistry::new();
-            for def in tools::get_browser_definitions() {
-                let _ = tool_registry.register(def);
-            }
-            for def in tools::get_computer_definitions() {
-                let _ = tool_registry.register(def);
-            }
-            for def in tools::get_edith_definitions() {
-                let _ = tool_registry.register(def);
-            }
-            let browser_executor = std::sync::Arc::new(tools::BrowserDomainExecutor::new(Some(
-                app.handle().clone(),
-            )));
-            let computer_executor = std::sync::Arc::new(tools::ComputerDomainExecutor::new(Some(
-                app.handle().clone(),
-            )));
-            let domain_executors = tools::DomainExecutorRegistry::new();
-            domain_executors.register(browser_executor);
-            domain_executors.register(computer_executor);
-            let domain_executors_arc = std::sync::Arc::new(domain_executors);
-            let tool_registry_arc = std::sync::Arc::new(tool_registry.clone());
-
-            let tool_router = tools::ToolRouter::with_defaults(
-                tool_registry_arc.clone(),
-                domain_executors_arc.clone(),
-                policy_engine_arc.clone(),
-                Some(emitter.clone()),
-            );
-            let tool_router_arc = std::sync::Arc::new(tool_router.clone());
-
-            let voice_stt = std::sync::Arc::new(voice::CloudSTTAdapter::new("cloud-stt", ""));
-            let voice_tts = std::sync::Arc::new(voice::EdgeTtsAdapter::new());
-            let voice_output = std::sync::Arc::new(voice::RodioAudioOutputDriver::new());
-            let voice_capture = std::sync::Arc::new(voice::BrowserCaptureBridge::new());
-            let realtime_engine = std::sync::Arc::new(voice::RealtimeVoiceEngine::new(
-                conversation_core_arc.clone(),
-                tool_router_arc.clone(),
-                voice_output.clone(),
-                voice_capture.clone(),
-                Some(std::sync::Arc::new(emitter.clone())),
-            ));
-            let voice_controller = std::sync::Arc::new(
-                voice::VoiceController::new(
-                    conversation_core_arc.clone(),
-                    voice_stt,
-                    voice_tts,
-                    voice_output,
-                    voice_capture,
-                    Some(std::sync::Arc::new(emitter.clone())),
-                )
-                .with_realtime_engine(realtime_engine.clone()),
-            );
-
-            let runtime_state = runtime::EdithRuntimeState::new(
-                conversation_core_arc,
-                task_runtime_arc,
-                tool_registry_arc.clone(),
-                tool_router_arc.clone(),
-                conversation_core.registry(),
-                policy_engine_arc,
-                Some(app.handle().clone()),
-                Some(conn2_arc),
-            )
-            .with_voice_controller(voice_controller.clone());
-            let edith_executor = std::sync::Arc::new(tools::EdithDomainExecutor::new(
-                std::sync::Arc::new(runtime_state.clone()),
-            ));
-            domain_executors_arc.register(edith_executor);
-
-            // Wire Universal Tool Runtime into authoritative ConversationCore agentic loop
-            conversation_core.set_tools(tool_router_arc.clone(), tool_registry_arc.clone());
-
-            app.manage(task_runtime);
-            app.manage(conversation_core);
-            app.manage(policy_engine);
-            app.manage(tool_registry);
-            app.manage(tool_router);
-            app.manage(runtime_state);
-            app.manage(realtime_engine);
-            app.manage(voice_controller);
-
+            let core = crate::core::JorenCore::initialize(app.handle())?;
+            let core_arc = std::sync::Arc::new(core);
+            let core_dispatch = core_arc.clone();
+            crate::cef::scheme::set_command_dispatcher(std::sync::Arc::new(move |cmd, args| {
+                core_dispatch.dispatch(cmd, args)
+            }));
             Ok(())
         })
         .on_window_event(|_window, event| match event {

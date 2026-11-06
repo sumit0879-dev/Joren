@@ -4,15 +4,15 @@ use std::os::raw::c_int;
 use std::sync::OnceLock;
 
 pub type FnCefExecuteProcess = unsafe extern "C" fn(
-    *const _cef_main_args_t,
-    *mut _cef_app_t,
+    *const cef_main_args_t,
+    *mut cef_app_t,
     *mut c_void,
 ) -> c_int;
 
 pub type FnCefInitialize = unsafe extern "C" fn(
-    *const _cef_main_args_t,
-    *const _cef_settings_t,
-    *mut _cef_app_t,
+    *const cef_main_args_t,
+    *const cef_settings_t,
+    *mut cef_app_t,
     *mut c_void,
 ) -> c_int;
 
@@ -22,28 +22,30 @@ pub type FnCefRunMessageLoop = unsafe extern "C" fn();
 pub type FnCefQuitMessageLoop = unsafe extern "C" fn();
 
 pub type FnCefBrowserHostCreateBrowser = unsafe extern "C" fn(
-    *const _cef_window_info_t,
-    *mut _cef_client_t,
-    *const _cef_string_utf16_t,
-    *const _cef_browser_settings_t,
-    *mut c_void,
-    *mut c_void,
+    *const cef_window_info_t,
+    *mut cef_client_t,
+    *const cef_string_t,
+    *const cef_browser_settings_t,
+    *mut cef_dictionary_value_t,
+    *mut cef_request_context_t,
 ) -> c_int;
 
 pub type FnCefRegisterSchemeHandlerFactory = unsafe extern "C" fn(
-    *const _cef_string_utf16_t,
-    *const _cef_string_utf16_t,
-    *mut _cef_scheme_handler_factory_t,
+    *const cef_string_t,
+    *const cef_string_t,
+    *mut cef_scheme_handler_factory_t,
 ) -> c_int;
 
 pub type FnCefStringUtf16Set = unsafe extern "C" fn(
     *const u16,
     usize,
-    *mut _cef_string_utf16_t,
+    *mut cef_string_utf16_t,
     c_int,
 ) -> c_int;
 
-pub type FnCefStringUtf16Clear = unsafe extern "C" fn(*mut _cef_string_utf16_t);
+pub type FnCefStringUtf16Clear = unsafe extern "C" fn(*mut cef_string_utf16_t);
+pub type FnCefStringUserfreeUtf16Free = unsafe extern "C" fn(cef_string_userfree_utf16_t);
+pub type FnCefApiVersion = unsafe extern "C" fn() -> c_int;
 
 pub struct CefApi {
     pub execute_process: FnCefExecuteProcess,
@@ -56,6 +58,8 @@ pub struct CefApi {
     pub register_scheme_handler_factory: FnCefRegisterSchemeHandlerFactory,
     pub string_utf16_set: FnCefStringUtf16Set,
     pub string_utf16_clear: FnCefStringUtf16Clear,
+    pub string_userfree_utf16_free: Option<FnCefStringUserfreeUtf16Free>,
+    pub api_version: Option<FnCefApiVersion>,
 }
 
 static CEF_API: OnceLock<Option<CefApi>> = OnceLock::new();
@@ -66,13 +70,12 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
         unsafe {
             use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 
-            // Attempt to load libcef.dll from the current directory or executable folder
+            // Attempt to load libcef.dll from current process module or executable folder
             let mut handle = GetModuleHandleW(windows_sys::core::w!("libcef.dll"));
             if handle.is_null() {
                 handle = LoadLibraryW(windows_sys::core::w!("libcef.dll"));
             }
             if handle.is_null() {
-                // Try relative to current exe
                 if let Ok(mut exe_dir) = std::env::current_exe() {
                     exe_dir.pop();
                     let cef_path = exe_dir.join("libcef.dll");
@@ -98,6 +101,17 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
                 };
             }
 
+            macro_rules! load_opt_sym {
+                ($name:ident, $sym:literal, $t:ty) => {
+                    let ptr = GetProcAddress(handle, concat!($sym, "\0").as_ptr());
+                    let $name: Option<$t> = if let Some(p) = ptr {
+                        Some(std::mem::transmute(p))
+                    } else {
+                        None
+                    };
+                };
+            }
+
             load_sym!(execute_process, "cef_execute_process", FnCefExecuteProcess);
             load_sym!(initialize, "cef_initialize", FnCefInitialize);
             load_sym!(shutdown, "cef_shutdown", FnCefShutdown);
@@ -108,6 +122,8 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
             load_sym!(register_scheme_handler_factory, "cef_register_scheme_handler_factory", FnCefRegisterSchemeHandlerFactory);
             load_sym!(string_utf16_set, "cef_string_utf16_set", FnCefStringUtf16Set);
             load_sym!(string_utf16_clear, "cef_string_utf16_clear", FnCefStringUtf16Clear);
+            load_opt_sym!(string_userfree_utf16_free, "cef_string_userfree_utf16_free", FnCefStringUserfreeUtf16Free);
+            load_opt_sym!(api_version, "cef_api_version", FnCefApiVersion);
 
             Some(CefApi {
                 execute_process,
@@ -120,6 +136,8 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
                 register_scheme_handler_factory,
                 string_utf16_set,
                 string_utf16_clear,
+                string_userfree_utf16_free,
+                api_version,
             })
         }
     }).as_ref()
@@ -130,23 +148,40 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
     None
 }
 
-pub fn cef_string_from_str(s: &str) -> _cef_string_utf16_t {
-    let mut out = _cef_string_utf16_t::default();
+pub fn cef_string_from_str(s: &str) -> cef_string_t {
+    let mut cef_str = cef_string_t {
+        str_: std::ptr::null_mut(),
+        length: 0,
+        dtor: None,
+    };
+    let wide: Vec<u16> = s.encode_utf16().collect();
     if let Some(api) = get_cef_api() {
-        let utf16: Vec<u16> = s.encode_utf16().collect();
         unsafe {
-            (api.string_utf16_set)(utf16.as_ptr(), utf16.len(), &mut out, 1);
+            (api.string_utf16_set)(wide.as_ptr(), wide.len(), &mut cef_str, 1);
         }
     }
-    out
+    cef_str
 }
 
-pub fn cef_string_to_string(cs: &_cef_string_utf16_t) -> String {
-    if cs.str_.is_null() || cs.length == 0 {
+pub fn cef_string_to_string(cef_str: &cef_string_t) -> String {
+    if cef_str.str_.is_null() || cef_str.length == 0 {
         return String::new();
     }
     unsafe {
-        let slice = std::slice::from_raw_parts(cs.str_, cs.length);
+        let slice = std::slice::from_raw_parts(cef_str.str_, cef_str.length);
         String::from_utf16_lossy(slice)
     }
+}
+
+pub unsafe fn cef_string_userfree_to_string_and_free(userfree: cef_string_userfree_t) -> String {
+    if userfree.is_null() {
+        return String::new();
+    }
+    let res = cef_string_to_string(&*userfree);
+    if let Some(api) = get_cef_api() {
+        if let Some(free_fn) = api.string_userfree_utf16_free {
+            free_fn(userfree);
+        }
+    }
+    res
 }
