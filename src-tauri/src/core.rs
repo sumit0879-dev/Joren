@@ -566,35 +566,56 @@ impl JorenCore {
                 Ok(serde_json::to_value(res).unwrap())
             }
 
-            "browser_show" | "browser_show_active" => {
-                crate::cef::update_browser_surface(None, true);
-                Ok(serde_json::json!({ "success": true }))
+            "browser_show" | "browser_show_active" => crate::cef::tabs::show_active(args),
+            "browser_hide" | "browser_hide_all" => crate::cef::tabs::hide_all(),
+            "browser_destroy" => crate::cef::tabs::hide_all(),
+            "browser_set_bounds" | "browser_set_bounds_all" => crate::cef::tabs::set_bounds(args),
+            "browser_go_back" | "browser_go_back_tab" => crate::cef::tabs::go_back(args),
+            "browser_go_forward" | "browser_go_forward_tab" => crate::cef::tabs::go_forward(args),
+            "browser_reload" | "browser_reload_tab" => crate::cef::tabs::reload(args),
+            "browser_create_tab" | "browser_create" => crate::cef::tabs::create_tab(args),
+            "browser_switch_tab" => crate::cef::tabs::switch_tab(args),
+            "browser_close_tab" => crate::cef::tabs::close_tab(args),
+            "browser_navigate_tab" | "browser_navigate" => crate::cef::tabs::navigate_tab(args),
+            "browser_get_multi_state" => crate::cef::tabs::get_state(),
+            "browser_get_url" | "browser_get_tab_url" => crate::cef::tabs::active_url(args),
+            "browser_click_element" => {
+                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
+                let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+                let script = format!(
+                    "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(!t)return;t.scrollIntoView({{block:'center'}});t.focus();t.click();}})();"
+                );
+                crate::cef::tabs::run_script(args, script)
             }
-
-            "browser_hide" | "browser_hide_all" => {
-                crate::cef::update_browser_surface(None, false);
-                Ok(serde_json::json!({ "success": true }))
+            "browser_type_element" => {
+                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
+                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+                let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'");
+                let script = format!(
+                    "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.focus();t.value='{escaped_text}';t.dispatchEvent(new Event('input',{{bubbles:true}}));}})();"
+                );
+                crate::cef::tabs::run_script(args, script)
             }
-
-            "browser_destroy" => {
-                crate::cef::update_browser_surface(None, false);
-                Ok(serde_json::json!({ "success": true }))
+            "browser_scroll" => {
+                let dy = args.get("deltaY").and_then(|v| v.as_f64()).unwrap_or(400.0) as i32;
+                crate::cef::tabs::run_script(args, format!("window.scrollBy(0,{dy});"))
             }
-
-            "browser_set_bounds" | "browser_set_bounds_all" => {
-                Ok(serde_json::json!({ "success": true }))
+            "browser_press_key" => {
+                let key = args.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
+                let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+                crate::cef::tabs::run_script(
+                    args,
+                    format!("document.activeElement&&document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{{key:'{escaped}',bubbles:true}}));"),
+                )
             }
-
-            "browser_go_back" | "browser_go_back_tab" => {
-                Ok(serde_json::json!({ "success": true }))
-            }
-
-            "browser_go_forward" | "browser_go_forward_tab" => {
-                Ok(serde_json::json!({ "success": true }))
-            }
-
-            "browser_reload" | "browser_reload_tab" => {
-                Ok(serde_json::json!({ "success": true }))
+            "browser_focus_element" => {
+                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
+                let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+                crate::cef::tabs::run_script(
+                    args,
+                    format!("(function(){{var t=document.getElementById('{escaped}');if(t)t.focus();}})();"),
+                )
             }
 
             "realtime_voice_stop" => {
@@ -612,11 +633,32 @@ impl JorenCore {
             "smoke_test_verify" => {
                 let react_ready = args.get("react_ready").and_then(|v| v.as_bool()).unwrap_or(false);
                 println!("[CORE] smoke_test_verify command invoked from frontend: react_ready={}", react_ready);
-                if react_ready {
-                    crate::cef::notify_smoke_test_success();
-                }
-                Ok(serde_json::json!({ "success": true, "verified": react_ready }))
+                crate::cef::dispatch_event_to_browser("smoke-test-event", "{\"ok\":true}");
+                Ok(serde_json::json!({
+                    "success": true,
+                    "pong": true,
+                    "react_ready": react_ready,
+                    "event": "smoke-test-event"
+                }))
             }
+
+            "smoke_test_ack" => {
+                let react_ready = args.get("react_ready").and_then(|v| v.as_bool()).unwrap_or(false);
+                let event_received = args.get("event_received").and_then(|v| v.as_bool()).unwrap_or(false);
+                println!("[CORE] smoke_test_ack react_ready={react_ready} event_received={event_received}");
+                if react_ready && event_received {
+                    crate::cef::notify_smoke_test_success();
+                    Ok(serde_json::json!({ "success": true, "verified": true }))
+                } else {
+                    Err(format!(
+                        "Smoke test acknowledgement incomplete (react_ready={react_ready}, event_received={event_received})"
+                    ))
+                }
+            }
+
+            other if other.starts_with("browser_") => Err(format!(
+                "Unsupported browser command '{other}'. It was not executed."
+            )),
 
             _ => {
                 eprintln!("[DISPATCHER] Unknown command received: {}", cmd);

@@ -36,11 +36,11 @@ impl JorenResourceHandler {
                     has_at_least_one_ref: Some(Self::has_at_least_one_ref),
                 },
                 open: Some(Self::open),
-                process_request: Some(Self::process_request),
+                process_request: None,
                 get_response_headers: Some(Self::get_response_headers),
                 skip: None,
                 read: Some(Self::read),
-                read_response: Some(Self::read_response),
+                read_response: None,
                 cancel: Some(Self::cancel),
             },
             response_data: data,
@@ -86,32 +86,21 @@ impl JorenResourceHandler {
         callback: *mut _cef_callback_t,
     ) -> c_int {
         let this = (self_ as *mut Self).as_mut().unwrap();
-        crate::cef::log_startup("HANDLER_OPEN", &format!("open: size={}, mime={}", this.response_data.len(), this.response_mime));
+        crate::cef::log_startup(
+            "HANDLER_OPEN",
+            &format!(
+                "open: bytes={}, mime={}, base.size={}",
+                this.response_data.len(),
+                this.response_mime,
+                this.base.base.size
+            ),
+        );
+        // Handle immediately. CEF requires that |callback| is executed only
+        // when handle_request is set to false.
         if !handle_request.is_null() {
             *handle_request = 1;
         }
-        if !callback.is_null() {
-            let cb = &*callback;
-            if let Some(cont) = cb.cont {
-                cont(callback);
-            }
-        }
-        1
-    }
-
-    unsafe extern "C" fn process_request(
-        self_: *mut _cef_resource_handler_t,
-        _request: *mut _cef_request_t,
-        callback: *mut _cef_callback_t,
-    ) -> c_int {
-        let this = (self_ as *mut Self).as_mut().unwrap();
-        crate::cef::log_startup("HANDLER_PROC", &format!("process_request: size={}, mime={}", this.response_data.len(), this.response_mime));
-        if !callback.is_null() {
-            let cb = &*callback;
-            if let Some(cont) = cb.cont {
-                cont(callback);
-            }
-        }
+        let _ = callback;
         1
     }
 
@@ -144,17 +133,10 @@ impl JorenResourceHandler {
                 let h_ct_val = cef_string_from_str(&content_type);
                 set_header(response, &h_ct_name, &h_ct_val, 1);
 
+                // Same-origin only. Do not grant wildcard access to the trusted app scheme.
                 let h_origin_name = cef_string_from_str("Access-Control-Allow-Origin");
-                let h_origin_val = cef_string_from_str("*");
+                let h_origin_val = cef_string_from_str("joren://app");
                 set_header(response, &h_origin_name, &h_origin_val, 1);
-
-                let h_methods_name = cef_string_from_str("Access-Control-Allow-Methods");
-                let h_methods_val = cef_string_from_str("GET, POST, OPTIONS, HEAD");
-                set_header(response, &h_methods_name, &h_methods_val, 1);
-
-                let h_headers_name = cef_string_from_str("Access-Control-Allow-Headers");
-                let h_headers_val = cef_string_from_str("Content-Type, Authorization, *");
-                set_header(response, &h_headers_name, &h_headers_val, 1);
             }
         }
         if !response_length.is_null() {
@@ -170,37 +152,15 @@ impl JorenResourceHandler {
         _callback: *mut _cef_resource_read_callback_t,
     ) -> c_int {
         let this = (self_ as *mut Self).as_mut().unwrap();
-        crate::cef::log_startup("HANDLER_READ", &format!("read: to_read={}, offset={}/{}", bytes_to_read, this.read_offset, this.response_data.len()));
-        if this.read_offset >= this.response_data.len() {
-            if !bytes_read.is_null() {
-                *bytes_read = 0;
-            }
-            return 0;
+        if this.read_offset == 0 || this.read_offset >= this.response_data.len() {
+            crate::cef::log_startup(
+                "HANDLER_READ",
+                &format!(
+                    "read: to_read={}, offset={}/{}",
+                    bytes_to_read, this.read_offset, this.response_data.len()
+                ),
+            );
         }
-
-        let available = this.response_data.len() - this.read_offset;
-        let to_copy = std::cmp::min(bytes_to_read as usize, available);
-        std::ptr::copy_nonoverlapping(
-            this.response_data[this.read_offset..].as_ptr(),
-            data_out as *mut u8,
-            to_copy,
-        );
-        this.read_offset += to_copy;
-        if !bytes_read.is_null() {
-            *bytes_read = to_copy as c_int;
-        }
-        1
-    }
-
-    unsafe extern "C" fn read_response(
-        self_: *mut _cef_resource_handler_t,
-        data_out: *mut c_void,
-        bytes_to_read: c_int,
-        bytes_read: *mut c_int,
-        _callback: *mut _cef_callback_t,
-    ) -> c_int {
-        let this = (self_ as *mut Self).as_mut().unwrap();
-        crate::cef::log_startup("HANDLER_READ_RESP", &format!("read_response: to_read={}, offset={}/{}", bytes_to_read, this.read_offset, this.response_data.len()));
         if this.read_offset >= this.response_data.len() {
             if !bytes_read.is_null() {
                 *bytes_read = 0;
@@ -306,49 +266,71 @@ impl JorenSchemeHandlerFactory {
 
         crate::cef::log_startup("SCHEME_REQ", &format!("{} {}", method, url_str));
 
+        let parsed = match parse_joren_url(&url_str) {
+            Some(parsed) => parsed,
+            None => {
+                crate::cef::log_startup("SECURITY", &format!("Rejecting non-app URL: {}", url_str));
+                return std::ptr::null_mut();
+            }
+        };
+
         if method.eq_ignore_ascii_case("OPTIONS") {
-            return JorenResourceHandler::new(Vec::new(), "text/plain".to_string(), 200);
+            return JorenResourceHandler::new(Vec::new(), "text/plain".to_string(), 204);
         }
 
-        // Strictly enforce trusted app scheme: joren://
-        if !url_str.starts_with("joren://") {
-            crate::cef::log_startup("SECURITY", &format!("Rejecting request with non-joren scheme: {}", url_str));
-            return std::ptr::null_mut();
+        if parsed.host != "app" {
+            crate::cef::log_startup("SECURITY", &format!("Rejecting untrusted joren host: {}", parsed.host));
+            return JorenResourceHandler::new(b"Forbidden".to_vec(), "text/plain".to_string(), 403);
         }
 
-        // Check if IPC endpoint: /api/invoke
-        if url_str.contains("/api/invoke") {
+        if parsed.path == "/api/invoke" {
+            if !method.eq_ignore_ascii_case("POST") {
+                crate::cef::log_startup("SECURITY", &format!("Rejecting {} /api/invoke", method));
+                return JorenResourceHandler::new(b"Method Not Allowed".to_vec(), "text/plain".to_string(), 405);
+            }
+            if let Some(get_header) = req.get_header_by_name {
+                let origin_name = cef_string_from_str("Origin");
+                let origin_ptr = get_header(request, &origin_name);
+                let origin = cef_string_userfree_to_string_and_free(origin_ptr);
+                if !origin.is_empty() && origin != "joren://app" && origin != "null" {
+                    crate::cef::log_startup("SECURITY", &format!("Rejecting IPC from origin {}", origin));
+                    return JorenResourceHandler::new(b"Forbidden".to_vec(), "text/plain".to_string(), 403);
+                }
+            }
             let mut post_bytes = Vec::new();
             if let Some(get_post_data) = req.get_post_data {
                 let post_data = get_post_data(request);
                 if !post_data.is_null() {
                     let pd = post_data.as_ref().unwrap();
-                    if let Some(get_elements) = pd.get_elements {
-                        let mut count = 0usize;
-                        get_elements(post_data, &mut count, std::ptr::null_mut());
-                        if count > 0 {
-                            let mut elements = vec![std::ptr::null_mut(); count];
-                            get_elements(post_data, &mut count, elements.as_mut_ptr());
-                            for el in elements {
-                                if !el.is_null() {
-                                    let elem = el.as_ref().unwrap();
-                                    if let Some(get_bytes_count) = elem.get_bytes_count {
-                                        let bcount = get_bytes_count(el);
-                                        if bcount > 0 && elem.get_bytes.is_some() {
-                                            let mut buf = vec![0u8; bcount];
-                                            let read = (elem.get_bytes.unwrap())(
-                                                el,
-                                                bcount,
-                                                buf.as_mut_ptr() as *mut c_void,
-                                            );
-                                            buf.truncate(read);
-                                            post_bytes.extend_from_slice(&buf);
-                                        }
+                    let count = if let Some(get_count) = pd.get_element_count {
+                        get_count(post_data)
+                    } else {
+                        0
+                    };
+                    if count > 0 && pd.get_elements.is_some() {
+                        let mut elements = vec![std::ptr::null_mut(); count];
+                        let mut actual_count = count;
+                        (pd.get_elements.unwrap())(post_data, &mut actual_count, elements.as_mut_ptr());
+                        for el in elements {
+                            if !el.is_null() {
+                                let elem = el.as_ref().unwrap();
+                                if let Some(get_bytes_count) = elem.get_bytes_count {
+                                    let bcount = get_bytes_count(el);
+                                    if bcount > 0 && elem.get_bytes.is_some() {
+                                        let mut buf = vec![0u8; bcount];
+                                        let read = (elem.get_bytes.unwrap())(
+                                            el,
+                                            bcount,
+                                            buf.as_mut_ptr() as *mut c_void,
+                                        );
+                                        buf.truncate(read);
+                                        post_bytes.extend_from_slice(&buf);
                                     }
                                 }
                             }
                         }
                     }
+                    crate::cef::log_startup("IPC_POST", &format!("Read {} POST bytes from {} elements", post_bytes.len(), count));
                 }
             }
 
@@ -380,88 +362,47 @@ impl JorenSchemeHandlerFactory {
                 } else {
                     response_body = serde_json::json!({ "error": "Missing 'cmd' parameter in request" });
                 }
+            } else {
+                crate::cef::log_startup("IPC_ERR", &format!("Failed to parse JSON from {} post bytes: {}", post_bytes.len(), String::from_utf8_lossy(&post_bytes)));
             }
 
             let resp_bytes = serde_json::to_vec(&response_body).unwrap_or_default();
             return JorenResourceHandler::new(resp_bytes, "application/json".to_string(), status);
         }
 
-        // Static bundled assets: joren://app/... or joren:///...
-        let path_and_query = if url_str.starts_with("joren://app") {
-            &url_str["joren://app".len()..]
-        } else if url_str.starts_with("joren://") {
-            &url_str["joren://".len()..]
-        } else {
-            "/index.html"
-        };
-
-        let clean_path = path_and_query.split('?').next().unwrap_or("/").split('#').next().unwrap_or("/");
-
-        // Simple percent decoding
-        fn percent_decode(input: &str) -> String {
-            let mut bytes = Vec::new();
-            let mut iter = input.bytes();
-            while let Some(b) = iter.next() {
-                if b == b'%' {
-                    let h1 = iter.next();
-                    let h2 = iter.next();
-                    if let (Some(c1), Some(c2)) = (h1, h2) {
-                        let hex = [c1, c2];
-                        if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&hex).unwrap_or(""), 16) {
-                            bytes.push(val);
-                            continue;
-                        }
-                        bytes.push(b'%');
-                        bytes.push(c1);
-                        bytes.push(c2);
-                    } else {
-                        bytes.push(b'%');
-                        if let Some(c) = h1 { bytes.push(c); }
-                    }
-                } else {
-                    bytes.push(b);
-                }
+        let sub_path = match safe_relative_path(&parsed.path) {
+            Ok(path) => path,
+            Err(_) => {
+                crate::cef::log_startup("SECURITY", &format!("Blocked path traversal attempt: {}", url_str));
+                return JorenResourceHandler::new(b"Forbidden".to_vec(), "text/plain".to_string(), 403);
             }
-            String::from_utf8_lossy(&bytes).to_string()
-        }
-
-        let decoded = percent_decode(clean_path);
-        let normalized = decoded.replace('\\', "/");
-        let trimmed = normalized.trim_start_matches('/');
-
-        // Reject path traversal
-        if trimmed.contains("..") || trimmed.contains(':') {
-            crate::cef::log_startup("SECURITY", &format!("Blocked path traversal attempt: {}", url_str));
-            return JorenResourceHandler::new(b"Forbidden".to_vec(), "text/plain".to_string(), 403);
-        }
-
-        let sub_path = if trimmed.is_empty() {
-            "index.html"
-        } else {
-            trimmed
         };
 
         // Determine if request expects a static file by checking if last segment has an extension
-        let last_segment = sub_path.rsplit('/').next().unwrap_or(sub_path);
+        let last_segment = sub_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(sub_path.as_str())
+            .to_string();
         let has_extension = last_segment.contains('.') && !last_segment.starts_with('.');
 
         // Locate bundled app folder
         let mut app_dir = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
         app_dir.pop();
-        let mut file_path = app_dir.join("app").join(sub_path);
+        let mut file_path = app_dir.join("app").join(&sub_path);
 
         if !file_path.exists() {
             // Check if flattened in app/last_segment (in case assets directory was flattened during copy)
-            let flattened_in_app = app_dir.join("app").join(last_segment);
+            let flattened_in_app = app_dir.join("app").join(&last_segment);
             if flattened_in_app.exists() {
                 file_path = flattened_in_app;
             } else {
                 // Check dev path
-                let dev_path = PathBuf::from("build").join(sub_path);
+                let dev_path = PathBuf::from("build").join(&sub_path);
                 if dev_path.exists() {
                     file_path = dev_path;
                 } else {
-                    let dev_flattened = PathBuf::from("build").join(last_segment);
+                    let dev_flattened = PathBuf::from("build").join(&last_segment);
                     if dev_flattened.exists() {
                         file_path = dev_flattened;
                     } else if !has_extension {
@@ -480,38 +421,7 @@ impl JorenSchemeHandlerFactory {
             }
         }
 
-        let path_lower = file_path.to_string_lossy().to_lowercase();
-        let mime = if path_lower.ends_with(".html") || path_lower.ends_with(".htm") {
-            "text/html"
-        } else if path_lower.ends_with(".js") || path_lower.ends_with(".mjs") {
-            "text/javascript"
-        } else if path_lower.ends_with(".css") {
-            "text/css"
-        } else if path_lower.ends_with(".json") {
-            "application/json"
-        } else if path_lower.ends_with(".svg") {
-            "image/svg+xml"
-        } else if path_lower.ends_with(".png") {
-            "image/png"
-        } else if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
-            "image/jpeg"
-        } else if path_lower.ends_with(".webp") {
-            "image/webp"
-        } else if path_lower.ends_with(".gif") {
-            "image/gif"
-        } else if path_lower.ends_with(".ico") {
-            "image/x-icon"
-        } else if path_lower.ends_with(".woff2") {
-            "font/woff2"
-        } else if path_lower.ends_with(".woff") {
-            "font/woff"
-        } else if path_lower.ends_with(".ttf") {
-            "font/ttf"
-        } else if path_lower.ends_with(".wasm") {
-            "application/wasm"
-        } else {
-            "application/octet-stream"
-        };
+        let mime = mime_for_path(&file_path.to_string_lossy());
 
         match std::fs::read(&file_path) {
             Ok(bytes) => {
@@ -523,5 +433,142 @@ impl JorenSchemeHandlerFactory {
                 JorenResourceHandler::new(b"404 Not Found".to_vec(), "text/plain".to_string(), 404)
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JorenUrl {
+    pub host: String,
+    pub path: String,
+}
+
+pub fn parse_joren_url(url: &str) -> Option<JorenUrl> {
+    let rest = url.strip_prefix("joren://")?;
+    let rest = rest.split('#').next().unwrap_or(rest);
+    let rest = rest.split('?').next().unwrap_or(rest);
+    if rest.is_empty() {
+        return None;
+    }
+    let (host, path) = if let Some((host, path)) = rest.split_once('/') {
+        (host, format!("/{path}"))
+    } else {
+        (rest, "/".to_string())
+    };
+    if host.is_empty() || host.contains(':') || host.contains('@') {
+        return None;
+    }
+    Some(JorenUrl {
+        host: host.to_string(),
+        path,
+    })
+}
+
+fn percent_decode(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut iter = input.bytes();
+    while let Some(b) = iter.next() {
+        if b == b'%' {
+            let h1 = iter.next();
+            let h2 = iter.next();
+            if let (Some(c1), Some(c2)) = (h1, h2) {
+                let hex = [c1, c2];
+                if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&hex).unwrap_or(""), 16) {
+                    bytes.push(val);
+                    continue;
+                }
+                bytes.push(b'%');
+                bytes.push(c1);
+                bytes.push(c2);
+            } else {
+                bytes.push(b'%');
+                if let Some(c) = h1 {
+                    bytes.push(c);
+                }
+            }
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+pub fn safe_relative_path(path: &str) -> Result<String, &'static str> {
+    let decoded = percent_decode(path);
+    let normalized = decoded.replace('\\', "/");
+    let trimmed = normalized.trim_start_matches('/');
+    if trimmed.contains("..") || trimmed.contains(':') {
+        return Err("rejected path");
+    }
+    if trimmed.is_empty() {
+        Ok("index.html".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+pub fn mime_for_path(path: &str) -> &'static str {
+    let path_lower = path.to_lowercase();
+    if path_lower.ends_with(".html") || path_lower.ends_with(".htm") {
+        "text/html"
+    } else if path_lower.ends_with(".js") || path_lower.ends_with(".mjs") {
+        "text/javascript"
+    } else if path_lower.ends_with(".css") {
+        "text/css"
+    } else if path_lower.ends_with(".json") {
+        "application/json"
+    } else if path_lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path_lower.ends_with(".png") {
+        "image/png"
+    } else if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if path_lower.ends_with(".webp") {
+        "image/webp"
+    } else if path_lower.ends_with(".gif") {
+        "image/gif"
+    } else if path_lower.ends_with(".ico") {
+        "image/x-icon"
+    } else if path_lower.ends_with(".avif") {
+        "image/avif"
+    } else if path_lower.ends_with(".woff2") {
+        "font/woff2"
+    } else if path_lower.ends_with(".woff") {
+        "font/woff"
+    } else if path_lower.ends_with(".ttf") {
+        "font/ttf"
+    } else if path_lower.ends_with(".wasm") {
+        "application/wasm"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_app_url_and_strips_query() {
+        let parsed = parse_joren_url("joren://app/assets/index-abc.js?v=1#x").unwrap();
+        assert_eq!(parsed.host, "app");
+        assert_eq!(parsed.path, "/assets/index-abc.js");
+    }
+
+    #[test]
+    fn rejects_traversal_and_foreign_scheme() {
+        assert!(safe_relative_path("/../windows/system32").is_err());
+        assert!(safe_relative_path("/C:/secret").is_err());
+        assert!(parse_joren_url("https://example.com/").is_none());
+        assert_eq!(safe_relative_path("/").unwrap(), "index.html");
+        assert_eq!(safe_relative_path("/chat").unwrap(), "chat");
+    }
+
+    #[test]
+    fn mime_matches_production_assets() {
+        assert_eq!(mime_for_path("app/index.html"), "text/html");
+        assert_eq!(mime_for_path("app/assets/index-abc.js"), "text/javascript");
+        assert_eq!(mime_for_path("app/assets/index-abc.css"), "text/css");
+        assert_eq!(mime_for_path("app/assets/icon.png"), "image/png");
+        assert_eq!(mime_for_path("app/assets/font.woff2"), "font/woff2");
     }
 }

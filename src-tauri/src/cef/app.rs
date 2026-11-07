@@ -83,9 +83,15 @@ impl JorenCefApp {
         let reg = &*registrar;
         if let Some(add_custom_scheme) = reg.add_custom_scheme {
             let scheme_name = cef_string_from_str("joren");
-            // Standard (1) | Secure (8) | CORS (16) | Fetch (64) = 89
-            // Do NOT include Local (2) as Local forces strict file:// origin restrictions that prevent loading ES modules
-            let options = 1 | 8 | 16 | 64;
+            // Standard URL parsing, secure context, display isolation from other
+            // origins, CORS for the app's own fetches, and Fetch API.
+            // Local is omitted: it applies file:// restrictions that block ES modules.
+            // CSP bypass and universal access are intentionally not set.
+            let options = (cef_scheme_options_t::CEF_SCHEME_OPTION_STANDARD as c_int)
+                | (cef_scheme_options_t::CEF_SCHEME_OPTION_DISPLAY_ISOLATED as c_int)
+                | (cef_scheme_options_t::CEF_SCHEME_OPTION_SECURE as c_int)
+                | (cef_scheme_options_t::CEF_SCHEME_OPTION_CORS_ENABLED as c_int)
+                | (cef_scheme_options_t::CEF_SCHEME_OPTION_FETCH_ENABLED as c_int);
             let res = add_custom_scheme(registrar, &scheme_name, options);
             crate::cef::log_startup(
                 "SCHEME",

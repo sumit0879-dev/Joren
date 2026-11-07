@@ -1,9 +1,10 @@
 pub mod api;
 pub mod app;
 pub mod scheme;
+pub mod tabs;
 pub mod types;
 
-use api::{cef_string_from_str, cef_string_to_string, get_cef_api};
+use api::{cef_string_from_str, cef_string_to_string, cef_string_userfree_to_string_and_free, get_cef_api};
 use app::JorenCefApp;
 use scheme::{set_command_dispatcher, JorenSchemeHandlerFactory};
 use std::ffi::c_void;
@@ -13,6 +14,7 @@ use types::*;
 
 pub struct BrowserSurfaceController {
     main_window_hwnd: isize,
+    main_view_hwnd: isize,
     browser_tab_hwnd: isize,
     is_browser_visible: bool,
     bounds: cef_rect_t,
@@ -27,7 +29,7 @@ pub fn log_startup(stage: &str, details: &str) {
     let _ = std::fs::create_dir_all(&log_dir);
     let log_file = log_dir.join("startup.log");
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    let line = format!("[{}] [{}] {}\n", now, stage, details);
+    let line = format!("[{}] [pid={}] [{}] {}\n", now, std::process::id(), stage, details);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
         use std::io::Write;
         let _ = f.write_all(line.as_bytes());
@@ -62,6 +64,7 @@ pub fn init_surface_controller(main_hwnd: isize) {
     let mut guard = SURFACE_CONTROLLER.lock().unwrap();
     *guard = Some(BrowserSurfaceController {
         main_window_hwnd: main_hwnd,
+        main_view_hwnd: 0,
         browser_tab_hwnd: 0,
         is_browser_visible: false,
         bounds: cef_rect_t {
@@ -73,10 +76,19 @@ pub fn init_surface_controller(main_hwnd: isize) {
     });
 }
 
-pub fn set_browser_child_hwnd(child_hwnd: isize) {
+pub fn host_hwnd() -> isize {
+    SURFACE_CONTROLLER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|ctrl| ctrl.main_window_hwnd)
+        .unwrap_or(0)
+}
+
+pub fn set_main_view_hwnd(hwnd: isize) {
     let mut guard = SURFACE_CONTROLLER.lock().unwrap();
     if let Some(ctrl) = guard.as_mut() {
-        ctrl.browser_tab_hwnd = child_hwnd;
+        ctrl.main_view_hwnd = hwnd;
     }
 }
 
@@ -124,6 +136,14 @@ pub fn is_smoke_test_passed() -> bool {
 }
 
 pub fn dispatch_event_to_browser(event_name: &str, payload_json: &str) {
+    let event_name = event_name.to_string();
+    let payload_json = payload_json.to_string();
+    tabs::post_ui_or_run(move || unsafe {
+        deliver_event_on_ui(&event_name, &payload_json);
+    });
+}
+
+unsafe fn deliver_event_on_ui(event_name: &str, payload_json: &str) {
     let guard = MAIN_BROWSER.lock().unwrap();
     if let Some(browser_ptr) = *guard {
         unsafe {
@@ -160,9 +180,9 @@ pub fn update_browser_surface_size(width: i32, height: i32) {
 
         let guard = SURFACE_CONTROLLER.lock().unwrap();
         if let Some(ctrl) = guard.as_ref() {
-            if ctrl.browser_tab_hwnd != 0 && width > 0 && height > 0 {
+            if ctrl.main_view_hwnd != 0 && width > 0 && height > 0 {
                 SetWindowPos(
-                    ctrl.browser_tab_hwnd as *mut c_void,
+                    ctrl.main_view_hwnd as *mut c_void,
                     std::ptr::null_mut(),
                     0,
                     0,
@@ -175,38 +195,12 @@ pub fn update_browser_surface_size(width: i32, height: i32) {
     }
 }
 
-pub fn update_browser_surface(bounds: Option<cef_rect_t>, show: bool) {
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-        };
-
-        let mut guard = SURFACE_CONTROLLER.lock().unwrap();
-        if let Some(ctrl) = guard.as_mut() {
-            ctrl.is_browser_visible = show;
-            if let Some(b) = bounds {
-                ctrl.bounds = b;
-            }
-
-            if ctrl.browser_tab_hwnd != 0 {
-                if show && ctrl.bounds.width > 0 && ctrl.bounds.height > 0 {
-                    SetWindowPos(
-                        ctrl.browser_tab_hwnd as *mut c_void,
-                        std::ptr::null_mut(),
-                        ctrl.bounds.x,
-                        ctrl.bounds.y,
-                        ctrl.bounds.width,
-                        ctrl.bounds.height,
-                        SWP_NOZORDER | SWP_NOACTIVATE,
-                    );
-                    ShowWindow(ctrl.browser_tab_hwnd as *mut c_void, SW_SHOW);
-                } else {
-                    ShowWindow(ctrl.browser_tab_hwnd as *mut c_void, SW_HIDE);
-                }
-            }
-        }
-    }
+pub fn update_browser_surface(_bounds: Option<cef_rect_t>, show: bool) {
+    // Website tabs are positioned by cef::tabs. This must not hide the React shell.
+    log_startup(
+        "TAB",
+        &format!("Legacy surface request show={show} does not affect the main UI browser"),
+    );
 }
 
 #[repr(C)]
@@ -269,19 +263,26 @@ impl JorenLifeSpanHandler {
         browser: *mut _cef_browser_t,
     ) {
         if !browser.is_null() {
-            set_main_browser(browser);
-            let b = &*browser;
-            if let Some(get_host) = b.get_host {
+            let mut child_hwnd = 0isize;
+            if let Some(get_host) = (*browser).get_host {
                 let host = get_host(browser);
                 if !host.is_null() {
-                    let h = &*host;
-                    if let Some(get_win) = h.get_window_handle {
-                        let child_hwnd = get_win(host);
-                        log_startup("BROWSER", &format!("Browser created successfully. Child HWND: {:?}", child_hwnd.0));
-                        set_browser_child_hwnd(child_hwnd.0 as isize);
+                    if let Some(get_win) = (*host).get_window_handle {
+                        let handle = get_win(host);
+                        child_hwnd = handle.0 as isize;
+                    }
+                    if let Some(release) = (*host).base.release {
+                        release(&mut (*host).base);
                     }
                 }
             }
+            if tabs::claim_created_browser(browser, child_hwnd) {
+                log_startup("BROWSER", &format!("Website tab browser created. Child HWND: {child_hwnd:#x}"));
+                return;
+            }
+            set_main_browser(browser);
+            set_main_view_hwnd(child_hwnd);
+            log_startup("BROWSER", &format!("App UI browser created. Child HWND: {child_hwnd:#x}"));
         }
     }
 
@@ -296,6 +297,7 @@ impl JorenLifeSpanHandler {
         _self: *mut _cef_life_span_handler_t,
         _browser: *mut _cef_browser_t,
     ) {
+        tabs::note_closed(_browser);
         log_startup("BROWSER", "Browser window is closing.");
         clear_main_browser();
     }
@@ -365,7 +367,14 @@ impl JorenLoadHandler {
             let f = &*frame;
             if let Some(is_main) = f.is_main {
                 if is_main(frame) != 0 {
-                    log_startup("LOAD", &format!("Main UI page loaded successfully (HTTP status: {})", http_status_code));
+                    let page_url = if let Some(get_url) = f.get_url {
+                        let raw = get_url(frame);
+                        cef_string_userfree_to_string_and_free(raw)
+                    } else {
+                        String::new()
+                    };
+                    tabs::note_navigation(_browser, page_url.clone());
+                    log_startup("LOAD", &format!("Main frame loaded (HTTP status: {http_status_code}) url={page_url}"));
                     if std::env::args().any(|a| a == "--smoke-test") {
                         if let Some(exec_js) = f.execute_java_script {
                             log_startup("SMOKE_TEST", "Injecting smoke-test JavaScript probe into main frame...");
@@ -399,13 +408,27 @@ impl JorenLoadHandler {
                                         if (window.__JOREN_APP_READY__) {
                                             clearInterval(check);
                                             console.log("[SMOKE_TEST] window.__JOREN_APP_READY__ confirmed true in page!");
+                                            let eventSeen = false;
+                                            window.addEventListener('joren-event', (e) => {
+                                                if (e.detail && e.detail.event === 'smoke-test-event') eventSeen = true;
+                                            });
                                             try {
                                                 const res = await fetch('/api/invoke', {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
                                                     body: JSON.stringify({ cmd: 'smoke_test_verify', args: { react_ready: true } })
                                                 });
-                                                console.log("[SMOKE_TEST] IPC pingback sent, status:", res.status);
+                                                const body = await res.json();
+                                                console.log("[SMOKE_TEST] IPC pingback status:", res.status, JSON.stringify(body));
+                                                for (let i = 0; i < 20 && !eventSeen; i++) {
+                                                    await new Promise((r) => setTimeout(r, 100));
+                                                }
+                                                console.log("[SMOKE_TEST] event received:", eventSeen);
+                                                await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'smoke_test_ack', args: { react_ready: true, event_received: eventSeen } })
+                                                });
                                             } catch (e) {
                                                 console.error("[SMOKE_TEST] IPC pingback failed:", e);
                                             }
@@ -738,7 +761,8 @@ unsafe fn run_cef_main(
     // Initialize Win32 Host Window
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Foundation::{GetLastError, HWND};
+        use windows_sys::Win32::Graphics::Gdi::CreateSolidBrush;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, RegisterClassExW, ShowWindow, CS_HREDRAW, CS_VREDRAW,
             SW_SHOW, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
@@ -755,6 +779,10 @@ unsafe fn run_cef_main(
             };
 
             match msg {
+                tabs::WM_JOREN_EXEC => {
+                    tabs::drain_ui_queue();
+                    0
+                }
                 WM_SIZE => {
                     let width = (lparam & 0xFFFF) as i32;
                     let height = ((lparam >> 16) & 0xFFFF) as i32;
@@ -796,19 +824,28 @@ unsafe fn run_cef_main(
             hInstance: h_module,
             hIcon: std::ptr::null_mut(),
             hCursor: std::ptr::null_mut(),
-            hbrBackground: std::ptr::null_mut(),
+            hbrBackground: CreateSolidBrush(0x00171412),
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name,
             hIconSm: std::ptr::null_mut(),
         };
 
-        RegisterClassExW(&wnd_class);
+        let atom = RegisterClassExW(&wnd_class);
+        if atom == 0 {
+            let err = GetLastError();
+            if err != 1410 {
+                let msg = format!("RegisterClassExW failed (GetLastError={err})");
+                log_startup("WINDOW", &msg);
+                show_fatal_error_dialog("Joren Window Error", &msg);
+                return 1;
+            }
+        }
 
         let main_hwnd = CreateWindowExW(
             0,
             class_name,
             windows_sys::core::w!("Joren"),
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | 0x02000000, // WS_CLIPCHILDREN
             100,
             100,
             1400,
@@ -819,18 +856,22 @@ unsafe fn run_cef_main(
             std::ptr::null(),
         );
 
+        if main_hwnd.is_null() {
+            let err = GetLastError();
+            let msg = format!("CreateWindowExW failed (GetLastError={err})");
+            log_startup("WINDOW", &msg);
+            show_fatal_error_dialog("Joren Window Error", &msg);
+            return 1;
+        }
+        init_surface_controller(main_hwnd as isize);
+        ShowWindow(main_hwnd, SW_SHOW);
+        log_startup("WINDOW", &format!("Host window created hwnd={:?}", main_hwnd));
+
         let mut win_info: cef_window_info_t = std::mem::zeroed();
         win_info.size = std::mem::size_of::<cef_window_info_t>();
-        if !main_hwnd.is_null() {
-            init_surface_controller(main_hwnd as isize);
-            ShowWindow(main_hwnd, SW_SHOW);
-            win_info.parent_window = HWND(main_hwnd as *mut _);
-            win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
-        } else {
-            log_startup("WINDOW", "Host HWND is NULL; creating CEF as top-level window");
-            win_info.parent_window = HWND(std::ptr::null_mut());
-            win_info.style = 0x10cf0000; // WS_VISIBLE | WS_OVERLAPPEDWINDOW
-        }
+        win_info.parent_window = HWND(main_hwnd as *mut _);
+        // WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS
+        win_info.style = 0x54000000;
         win_info.bounds = cef_rect_t {
             x: 0,
             y: 0,
@@ -864,6 +905,7 @@ unsafe fn run_cef_main(
         log_startup("BROWSER", "Browser creation initiated.");
     }
 
+    tabs::set_ui_thread();
     // Enter standard CEF message loop
     (api.run_message_loop)();
 
