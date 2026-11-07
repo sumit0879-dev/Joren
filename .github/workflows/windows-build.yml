@@ -168,25 +168,45 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "Starting sandboxed native launch smoke test on staged executable..."
-          $proc = Start-Process -FilePath "staging\joren\joren.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          $stagingDir = (Resolve-Path "staging\joren").Path
+          $exePath = Join-Path $stagingDir "joren.exe"
+          $stdoutLog = Join-Path $PWD "smoke_stdout.log"
+          $stderrLog = Join-Path $PWD "smoke_stderr.log"
+
+          $proc = Start-Process -FilePath $exePath `
+            -ArgumentList "--smoke-test" `
+            -WorkingDirectory $stagingDir `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog `
+            -PassThru -Wait
+
           Write-Host "Smoke test process exit code: $($proc.ExitCode)"
-          if ($proc.ExitCode -ne 0) {
-              Write-Error "Smoke test FAILED with exit code $($proc.ExitCode)"
-              if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
-                  Write-Host "=== startup.log ==="
-                  Get-Content "$env:APPDATA\Joren\logs\startup.log"
-              }
-              if (Test-Path "$env:APPDATA\Joren\logs\cef.log") {
-                  Write-Host "=== cef.log ==="
-                  Get-Content "$env:APPDATA\Joren\logs\cef.log"
-              }
-              exit 1
+          if (Test-Path $stdoutLog) {
+              Write-Host "=== smoke_stdout.log ==="
+              Get-Content $stdoutLog
           }
-          Write-Host "Native smoke test PASSED cleanly with exit code 0."
+          if (Test-Path $stderrLog) {
+              Write-Host "=== smoke_stderr.log ==="
+              Get-Content $stderrLog
+          }
           if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
               Write-Host "=== startup.log ==="
               Get-Content "$env:APPDATA\Joren\logs\startup.log"
           }
+          if (Test-Path "$env:APPDATA\Joren\logs\cef.log") {
+              Write-Host "=== cef.log ==="
+              Get-Content "$env:APPDATA\Joren\logs\cef.log"
+          }
+          if (Test-Path "staging\joren\debug.log") {
+              Write-Host "=== staging\joren\debug.log ==="
+              Get-Content "staging\joren\debug.log"
+          }
+
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "Smoke test FAILED with exit code $($proc.ExitCode)"
+              exit 1
+          }
+          Write-Host "Native smoke test PASSED cleanly with exit code 0."
 
       - name: Setup NSIS Compiler
         shell: pwsh

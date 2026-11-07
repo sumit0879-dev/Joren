@@ -29,12 +29,17 @@ pub fn log_startup(stage: &str, details: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
         use std::io::Write;
         let _ = f.write_all(line.as_bytes());
+        let _ = f.flush();
     }
     eprintln!("[{}] {}", stage, details);
 }
 
 #[cfg(target_os = "windows")]
 pub fn show_fatal_error_dialog(title: &str, message: &str) {
+    eprintln!("[FATAL_ERROR_DIALOG] [{}] {}", title, message);
+    if std::env::var("CI").is_ok() || std::env::args().any(|a| a == "--smoke-test") {
+        return;
+    }
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
     let wide_title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
     let wide_msg: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
@@ -422,6 +427,25 @@ pub unsafe extern "system" fn RunWinMain(
     sandbox_info: *mut c_void,
     version_info: *const c_void,
 ) -> i32 {
+    run_cef_main(h_instance, sandbox_info, version_info)
+}
+
+/// Official CEF Console Entry Point exported by joren.dll
+#[no_mangle]
+pub unsafe extern "system" fn RunConsoleMain(
+    _argc: i32,
+    _argv: *const *const u8,
+    sandbox_info: *mut c_void,
+    version_info: *const c_void,
+) -> i32 {
+    run_cef_main(0, sandbox_info, version_info)
+}
+
+unsafe fn run_cef_main(
+    h_instance: isize,
+    sandbox_info: *mut c_void,
+    version_info: *const c_void,
+) -> i32 {
     log_startup("BOOTSTRAP", "RunWinMain entered from bootstrap.exe launcher.");
 
     // -------------------------------------------------------------
@@ -474,10 +498,15 @@ pub unsafe extern "system" fn RunWinMain(
     settings.background_color = 0xFF121417;
 
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-    let cef_log_path = std::path::PathBuf::from(&appdata).join("Joren").join("logs").join("cef.log");
+    let joren_data_dir = std::path::PathBuf::from(&appdata).join("Joren");
+    let cef_cache_path = joren_data_dir.join("cache");
+    let cef_log_path = joren_data_dir.join("logs").join("cef.log");
+    let _ = std::fs::create_dir_all(&cef_cache_path);
     if let Some(parent) = cef_log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    settings.root_cache_path = cef_string_from_str(&cef_cache_path.to_string_lossy());
+    settings.cache_path = cef_string_from_str(&cef_cache_path.to_string_lossy());
     settings.log_file = cef_string_from_str(&cef_log_path.to_string_lossy());
     settings.log_severity = cef_log_severity_t::LOGSEVERITY_INFO;
 
@@ -536,13 +565,11 @@ pub unsafe extern "system" fn RunWinMain(
             Ok(val) => {
                 log_startup("SMOKE_TEST", &format!("Smoke test ping succeeded: {}", val));
                 log_startup("SMOKE_TEST", "All smoke test checks PASSED cleanly.");
-                (api.shutdown)();
-                return 0;
+                std::process::exit(0);
             }
             Err(e) => {
                 log_startup("SMOKE_TEST", &format!("Smoke test ping FAILED: {}", e));
-                (api.shutdown)();
-                return 1;
+                std::process::exit(1);
             }
         }
     }
@@ -582,6 +609,9 @@ pub unsafe extern "system" fn RunWinMain(
                     0
                 }
                 WM_DESTROY => {
+                    if let Some(api) = get_cef_api() {
+                        (api.quit_message_loop)();
+                    }
                     PostQuitMessage(0);
                     0
                 }
