@@ -373,6 +373,7 @@ impl JorenLoadHandler {
                                 (async function() {
                                     console.log("[SMOKE_TEST] Main frame URL:", window.location.href);
                                     console.log("[SMOKE_TEST] Document readyState:", document.readyState);
+                                    console.log("[SMOKE_TEST] HTML preview:", (document.documentElement ? document.documentElement.outerHTML.substring(0, 300) : "null"));
                                     const scriptElements = Array.from(document.querySelectorAll('script'));
                                     const scripts = scriptElements.map(s => ({ src: s.src, type: s.type }));
                                     console.log("[SMOKE_TEST] Script tags in DOM:", JSON.stringify(scripts));

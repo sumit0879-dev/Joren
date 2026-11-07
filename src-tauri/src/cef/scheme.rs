@@ -36,11 +36,11 @@ impl JorenResourceHandler {
                     has_at_least_one_ref: Some(Self::has_at_least_one_ref),
                 },
                 open: Some(Self::open),
-                process_request: None,
+                process_request: Some(Self::process_request),
                 get_response_headers: Some(Self::get_response_headers),
                 skip: None,
                 read: Some(Self::read),
-                read_response: None,
+                read_response: Some(Self::read_response),
                 cancel: Some(Self::cancel),
             },
             response_data: data,
@@ -80,13 +80,37 @@ impl JorenResourceHandler {
     }
 
     unsafe extern "C" fn open(
-        _self: *mut _cef_resource_handler_t,
+        self_: *mut _cef_resource_handler_t,
         _request: *mut _cef_request_t,
         handle_request: *mut c_int,
-        _callback: *mut _cef_callback_t,
+        callback: *mut _cef_callback_t,
     ) -> c_int {
+        let this = (self_ as *mut Self).as_mut().unwrap();
+        crate::cef::log_startup("HANDLER_OPEN", &format!("open: size={}, mime={}", this.response_data.len(), this.response_mime));
         if !handle_request.is_null() {
             *handle_request = 1;
+        }
+        if !callback.is_null() {
+            let cb = &*callback;
+            if let Some(cont) = cb.cont {
+                cont(callback);
+            }
+        }
+        1
+    }
+
+    unsafe extern "C" fn process_request(
+        self_: *mut _cef_resource_handler_t,
+        _request: *mut _cef_request_t,
+        callback: *mut _cef_callback_t,
+    ) -> c_int {
+        let this = (self_ as *mut Self).as_mut().unwrap();
+        crate::cef::log_startup("HANDLER_PROC", &format!("process_request: size={}, mime={}", this.response_data.len(), this.response_mime));
+        if !callback.is_null() {
+            let cb = &*callback;
+            if let Some(cont) = cb.cont {
+                cont(callback);
+            }
         }
         1
     }
@@ -98,6 +122,7 @@ impl JorenResourceHandler {
         _redirect_url: *mut _cef_string_utf16_t,
     ) {
         let this = (self_ as *mut Self).as_mut().unwrap();
+        crate::cef::log_startup("HANDLER_HDR", &format!("get_response_headers: status={}, mime={}, len={}", this.response_status, this.response_mime, this.response_data.len()));
         if let Some(resp) = response.as_mut() {
             if let Some(set_status) = resp.set_status {
                 set_status(response, this.response_status);
@@ -133,6 +158,7 @@ impl JorenResourceHandler {
         _callback: *mut _cef_resource_read_callback_t,
     ) -> c_int {
         let this = (self_ as *mut Self).as_mut().unwrap();
+        crate::cef::log_startup("HANDLER_READ", &format!("read: to_read={}, offset={}/{}", bytes_to_read, this.read_offset, this.response_data.len()));
         if this.read_offset >= this.response_data.len() {
             if !bytes_read.is_null() {
                 *bytes_read = 0;
@@ -154,7 +180,39 @@ impl JorenResourceHandler {
         1
     }
 
-    unsafe extern "C" fn cancel(_self: *mut _cef_resource_handler_t) {}
+    unsafe extern "C" fn read_response(
+        self_: *mut _cef_resource_handler_t,
+        data_out: *mut c_void,
+        bytes_to_read: c_int,
+        bytes_read: *mut c_int,
+        _callback: *mut _cef_callback_t,
+    ) -> c_int {
+        let this = (self_ as *mut Self).as_mut().unwrap();
+        crate::cef::log_startup("HANDLER_READ_RESP", &format!("read_response: to_read={}, offset={}/{}", bytes_to_read, this.read_offset, this.response_data.len()));
+        if this.read_offset >= this.response_data.len() {
+            if !bytes_read.is_null() {
+                *bytes_read = 0;
+            }
+            return 0;
+        }
+
+        let available = this.response_data.len() - this.read_offset;
+        let to_copy = std::cmp::min(bytes_to_read as usize, available);
+        std::ptr::copy_nonoverlapping(
+            this.response_data[this.read_offset..].as_ptr(),
+            data_out as *mut u8,
+            to_copy,
+        );
+        this.read_offset += to_copy;
+        if !bytes_read.is_null() {
+            *bytes_read = to_copy as c_int;
+        }
+        1
+    }
+
+    unsafe extern "C" fn cancel(self_: *mut _cef_resource_handler_t) {
+        crate::cef::log_startup("HANDLER_CANCEL", "cancel called");
+    }
 }
 
 #[repr(C)]
