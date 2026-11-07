@@ -32,5 +32,6 @@ mod tests {
         assert_eq!(std::mem::size_of::<_cef_load_handler_t>(), 72);
         assert_eq!(std::mem::size_of::<_cef_scheme_handler_factory_t>(), 48);
         assert_eq!(std::mem::size_of::<_cef_resource_handler_t>(), 96);
+        assert_eq!(CEF_API_VERSION_LAST, 15600);
     }
 }

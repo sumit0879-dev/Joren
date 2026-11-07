@@ -478,6 +478,15 @@ unsafe fn run_cef_main(
         }
     };
 
+    // Configure CEF API version via cef_api_hash to ensure wrapper CToCpp checks pass
+    if let Some(hash_fn) = api.api_hash {
+        let _ = hash_fn(CEF_API_VERSION_LAST, 0);
+        if let Some(ver_fn) = api.api_version {
+            let ver = ver_fn();
+            log_startup("VERSION", &format!("Configured CEF API version: {}", ver));
+        }
+    }
+
     let main_args = cef_main_args_t {
         instance: HINSTANCE(h_instance as *mut _),
     };

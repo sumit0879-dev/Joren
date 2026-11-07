@@ -46,6 +46,7 @@ pub type FnCefStringUtf16Set = unsafe extern "C" fn(
 pub type FnCefStringUtf16Clear = unsafe extern "C" fn(*mut cef_string_utf16_t);
 pub type FnCefStringUserfreeUtf16Free = unsafe extern "C" fn(cef_string_userfree_utf16_t);
 pub type FnCefApiVersion = unsafe extern "C" fn() -> c_int;
+pub type FnCefApiHash = unsafe extern "C" fn(std::os::raw::c_int, std::os::raw::c_int) -> *const std::os::raw::c_char;
 
 pub struct CefApi {
     pub execute_process: FnCefExecuteProcess,
@@ -60,6 +61,7 @@ pub struct CefApi {
     pub string_utf16_clear: FnCefStringUtf16Clear,
     pub string_userfree_utf16_free: Option<FnCefStringUserfreeUtf16Free>,
     pub api_version: Option<FnCefApiVersion>,
+    pub api_hash: Option<FnCefApiHash>,
 }
 
 static CEF_API: OnceLock<Option<CefApi>> = OnceLock::new();
@@ -124,6 +126,7 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
             load_sym!(string_utf16_clear, "cef_string_utf16_clear", FnCefStringUtf16Clear);
             load_opt_sym!(string_userfree_utf16_free, "cef_string_userfree_utf16_free", FnCefStringUserfreeUtf16Free);
             load_opt_sym!(api_version, "cef_api_version", FnCefApiVersion);
+            load_opt_sym!(api_hash, "cef_api_hash", FnCefApiHash);
 
             Some(CefApi {
                 execute_process,
@@ -138,6 +141,7 @@ pub fn get_cef_api() -> Option<&'static CefApi> {
                 string_utf16_clear,
                 string_userfree_utf16_free,
                 api_version,
+                api_hash,
             })
         }
     }).as_ref()
