@@ -370,7 +370,24 @@ impl JorenLoadHandler {
                         if let Some(exec_js) = f.execute_java_script {
                             log_startup("SMOKE_TEST", "Injecting smoke-test JavaScript probe into main frame...");
                             let script = cef_string_from_str(r#"
-                                (function() {
+                                (async function() {
+                                    console.log("[SMOKE_TEST] Main frame URL:", window.location.href);
+                                    console.log("[SMOKE_TEST] Document readyState:", document.readyState);
+                                    const scriptElements = Array.from(document.querySelectorAll('script'));
+                                    const scripts = scriptElements.map(s => ({ src: s.src, type: s.type }));
+                                    console.log("[SMOKE_TEST] Script tags in DOM:", JSON.stringify(scripts));
+
+                                    for (const s of scriptElements) {
+                                        if (s.src) {
+                                            try {
+                                                const r = await fetch(s.src);
+                                                console.log("[SMOKE_TEST] fetch " + s.src + " -> status: " + r.status + ", type: " + r.headers.get("content-type"));
+                                            } catch (err) {
+                                                console.error("[SMOKE_TEST] fetch " + s.src + " FAILED:", err);
+                                            }
+                                        }
+                                    }
+
                                     let attempts = 0;
                                     const maxAttempts = 220;
                                     const check = setInterval(async () => {

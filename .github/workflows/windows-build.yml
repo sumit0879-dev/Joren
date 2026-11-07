@@ -148,8 +148,10 @@ jobs:
           }
 
           # 5. Bundled frontend React build
+          New-Item -ItemType Directory -Path "staging\joren\app" -Force | Out-Null
           Copy-Item -Recurse -Force "build\*" -Destination "staging\joren\app\"
           Write-Host "Staged React frontend build to app/"
+          Get-ChildItem -Recurse "staging\joren\app" | Select-Object Name, Length
 
           # 6. Local LLM assets (preserved)
           if (Test-Path "Llama") {
@@ -207,17 +209,6 @@ jobs:
               exit 1
           }
           Write-Host "Native smoke test PASSED cleanly with exit code 0."
-
-      - name: Upload Diagnostic Logs on Any Outcome
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: joren-diagnostic-logs
-          path: |
-            *.log
-            staging/joren/*.log
-            C:/Users/*/AppData/Roaming/Joren/logs/*.log
-          if-no-files-found: ignore
 
       - name: Setup NSIS Compiler
         shell: pwsh
@@ -320,3 +311,26 @@ jobs:
             staging/SHA256.txt
           retention-days: 14
           if-no-files-found: error
+
+      - name: Collect Diagnostic Logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "diagnostic-logs" -Force | Out-Null
+          if (Test-Path "$env:APPDATA\Joren\logs") {
+              Copy-Item -Recurse -Force "$env:APPDATA\Joren\logs\*" -Destination "diagnostic-logs\"
+          }
+          if (Test-Path "staging\joren\*.log") {
+              Copy-Item -Force "staging\joren\*.log" -Destination "diagnostic-logs\"
+          }
+          if (Test-Path "*.log") {
+              Copy-Item -Force "*.log" -Destination "diagnostic-logs\"
+          }
+
+      - name: Upload Diagnostic Logs on Any Outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: joren-diagnostic-logs
+          path: diagnostic-logs/
+          if-no-files-found: ignore

@@ -381,19 +381,30 @@ impl JorenSchemeHandlerFactory {
         let mut file_path = app_dir.join("app").join(sub_path);
 
         if !file_path.exists() {
-            // Check dev path
-            let dev_path = PathBuf::from("build").join(sub_path);
-            if dev_path.exists() {
-                file_path = dev_path;
-            } else if !has_extension {
-                // SPA client-side route fallback (only for extensionless route paths, e.g. /chat)
-                let index_path = app_dir.join("app").join("index.html");
-                if index_path.exists() {
-                    file_path = index_path;
+            // Check if flattened in app/last_segment (in case assets directory was flattened during copy)
+            let flattened_in_app = app_dir.join("app").join(last_segment);
+            if flattened_in_app.exists() {
+                file_path = flattened_in_app;
+            } else {
+                // Check dev path
+                let dev_path = PathBuf::from("build").join(sub_path);
+                if dev_path.exists() {
+                    file_path = dev_path;
                 } else {
-                    let dev_index = PathBuf::from("build").join("index.html");
-                    if dev_index.exists() {
-                        file_path = dev_index;
+                    let dev_flattened = PathBuf::from("build").join(last_segment);
+                    if dev_flattened.exists() {
+                        file_path = dev_flattened;
+                    } else if !has_extension {
+                        // SPA client-side route fallback (only for extensionless route paths, e.g. /chat)
+                        let index_path = app_dir.join("app").join("index.html");
+                        if index_path.exists() {
+                            file_path = index_path;
+                        } else {
+                            let dev_index = PathBuf::from("build").join("index.html");
+                            if dev_index.exists() {
+                                file_path = dev_index;
+                            }
+                        }
                     }
                 }
             }

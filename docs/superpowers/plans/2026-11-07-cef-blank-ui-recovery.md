@@ -86,3 +86,4 @@
 - [ ] Monitor GitHub Actions `CI` and `Windows Build` until both are green.
 - [ ] Verify generated artifacts (`joren-setup-x64.exe` and portable zip).
 - [ ] Produce final evidence report while keeping PR #2 open.
+
