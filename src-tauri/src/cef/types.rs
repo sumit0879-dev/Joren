@@ -3,20 +3,18 @@
 
 pub use cef_dll_sys::*;
 
-use std::os::raw::c_int;
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct _cef_version_info_t {
     pub size: usize,
-    pub cef_version_major: c_int,
-    pub cef_version_minor: c_int,
-    pub cef_version_patch: c_int,
-    pub cef_commit_number: c_int,
-    pub chrome_version_major: c_int,
-    pub chrome_version_minor: c_int,
-    pub chrome_version_build: c_int,
-    pub chrome_version_patch: c_int,
+    pub cef_version_major: std::os::raw::c_int,
+    pub cef_version_minor: std::os::raw::c_int,
+    pub cef_version_patch: std::os::raw::c_int,
+    pub cef_commit_number: std::os::raw::c_int,
+    pub chrome_version_major: std::os::raw::c_int,
+    pub chrome_version_minor: std::os::raw::c_int,
+    pub chrome_version_build: std::os::raw::c_int,
+    pub chrome_version_patch: std::os::raw::c_int,
 }
 pub type cef_version_info_t = _cef_version_info_t;
 

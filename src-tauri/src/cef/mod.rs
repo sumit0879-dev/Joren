@@ -57,7 +57,12 @@ pub fn init_surface_controller(main_hwnd: isize) {
         main_window_hwnd: main_hwnd,
         browser_tab_hwnd: 0,
         is_browser_visible: false,
-        bounds: cef_rect_t::default(),
+        bounds: cef_rect_t {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        },
     });
 }
 
@@ -450,7 +455,7 @@ pub unsafe extern "system" fn RunWinMain(
     };
 
     let main_args = cef_main_args_t {
-        instance: HINSTANCE(h_instance as *mut c_void),
+        instance: HINSTANCE(h_instance as *mut _),
     };
 
     // Subprocess execution: handles renderer, gpu, utility, etc.
@@ -623,7 +628,7 @@ pub unsafe extern "system" fn RunWinMain(
         // Create main UI browser window attached to host HWND
         let mut win_info: cef_window_info_t = std::mem::zeroed();
         win_info.size = std::mem::size_of::<cef_window_info_t>();
-        win_info.parent_window = cef_window_handle_t(main_hwnd as *mut c_void);
+        win_info.parent_window = HWND(main_hwnd as *mut _);
         win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
         win_info.bounds = cef_rect_t {
             x: 0,
@@ -636,7 +641,6 @@ pub unsafe extern "system" fn RunWinMain(
         b_settings.size = std::mem::size_of::<cef_browser_settings_t>();
         b_settings.javascript = cef_state_t::STATE_ENABLED;
         b_settings.local_storage = cef_state_t::STATE_ENABLED;
-        b_settings.databases = cef_state_t::STATE_ENABLED;
         b_settings.webgl = cef_state_t::STATE_ENABLED;
 
         let app_url = cef_string_from_str("joren://app/index.html");

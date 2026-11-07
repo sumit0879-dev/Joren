@@ -394,24 +394,21 @@ impl JorenCore {
             }
 
             "fetch_custom_models" => {
-                let provider = args.get("provider").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let base_url = args.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let api_key = args.get("apiKey").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = tokio_rt.block_on(crate::providers::fetch_custom_models(provider, base_url, api_key))?;
+                let base_url = args.get("baseUrl").or_else(|| args.get("base_url")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let api_key = args.get("apiKey").or_else(|| args.get("api_key")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::providers::fetch_custom_models(base_url, api_key))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "tts_speak" => {
                 let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let voice = args.get("voice").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let rate = args.get("rate").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let pitch = args.get("pitch").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = tokio_rt.block_on(crate::tts::tts_speak(text, voice, rate, pitch))?;
+                let res = tokio_rt.block_on(crate::tts::tts_speak(text, voice))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "tts_stop" => {
-                let res = crate::tts::tts_stop();
+                let res = tokio_rt.block_on(crate::tts::tts_stop())?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -425,16 +422,18 @@ impl JorenCore {
             }
 
             "agent_status" => {
-                let res = crate::agent::agent_status(app.state())?;
+                let res = tokio_rt.block_on(crate::agent::agent_status(app.state()))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "agent_chat" => {
                 let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let session_id = args.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let session_id = args.get("sessionId").or_else(|| args.get("session_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
                 let res = tokio_rt.block_on(crate::agent::agent_chat(
+                    app.clone(),
                     message,
                     session_id,
+                    app.state(),
                     app.state(),
                     app.state(),
                 ))?;
@@ -443,12 +442,12 @@ impl JorenCore {
 
             "agent_set_path" => {
                 let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::agent::agent_set_path(path, app.state())?;
+                let res = tokio_rt.block_on(crate::agent::agent_set_path(path, app.state()))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "agent_reset" => {
-                let res = crate::agent::agent_reset(app.state())?;
+                let res = tokio_rt.block_on(crate::agent::agent_reset(app.state()))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -466,63 +465,63 @@ impl JorenCore {
             }
 
             "get_plugins" => {
-                let res = crate::plugins::get_plugins(app.state());
+                let res = crate::plugins::get_plugins(app.state())?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "toggle_plugin" => {
-                let plugin_id = args.get("pluginId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::toggle_plugin(plugin_id, app.state());
+                let plugin_id = args.get("pluginId").or_else(|| args.get("plugin_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::plugins::toggle_plugin(plugin_id, app.state())?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_system_terminal" => {
                 let cmd_str = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_system_terminal(cmd_str, app.state());
+                let res = crate::plugins::plugin_system_terminal(&cmd_str);
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_system_control" => {
                 let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_system_control(action, app.state());
+                let res = crate::plugins::plugin_system_control(&action);
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_app_launcher" => {
-                let app_path = args.get("appPath").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_app_launcher(app_path, app.state());
+                let app_path = args.get("appPath").or_else(|| args.get("app_path")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::plugins::plugin_app_launcher(&app_path);
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_web_search" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let api_key = args.get("apiKey").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = tokio_rt.block_on(crate::plugins::plugin_web_search(query, api_key, app.state()))?;
+                let api_key = args.get("apiKey").or_else(|| args.get("api_key")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::plugins::plugin_web_search(query, api_key));
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_media_player" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_media_player(query, app.state());
+                let res = tokio_rt.block_on(crate::plugins::plugin_media_player(query));
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_whatsapp" => {
                 let number = args.get("number").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_whatsapp(number, message, app.state());
+                let res = crate::plugins::plugin_whatsapp(&number, &message);
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "plugin_gmail" => {
                 let email = args.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::plugins::plugin_gmail(email, message, app.state());
+                let res = crate::plugins::plugin_gmail(&email, &message);
                 Ok(serde_json::to_value(res).unwrap())
             }
 
             "take_screenshot" => {
-                let res = crate::plugins::take_screenshot(app.state());
+                let res = tokio_rt.block_on(crate::plugins::take_screenshot())?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -589,3 +588,4 @@ impl JorenCore {
         }
     }
 }
+
