@@ -16,6 +16,7 @@ impl JorenCefApp {
         base.base.release = Some(Self::release);
         base.base.has_one_ref = Some(Self::has_one_ref);
         base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_before_command_line_processing = Some(Self::on_before_command_line_processing);
         base.on_register_custom_schemes = Some(Self::on_register_custom_schemes);
 
         let app = Box::new(Self {
@@ -52,6 +53,26 @@ impl JorenCefApp {
         if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
     }
 
+    unsafe extern "C" fn on_before_command_line_processing(
+        _self: *mut _cef_app_t,
+        _process_type: *const cef_string_t,
+        command_line: *mut _cef_command_line_t,
+    ) {
+        if command_line.is_null() {
+            return;
+        }
+        let cl = &*command_line;
+        if let Some(append_switch) = cl.append_switch {
+            // Disable GPU acceleration when running in CI or headless environments to avoid DX11 driver failures
+            if std::env::var("CI").is_ok() || std::env::args().any(|a| a == "--smoke-test") {
+                let s_gpu = cef_string_from_str("disable-gpu");
+                let s_shm = cef_string_from_str("disable-dev-shm-usage");
+                append_switch(command_line, &s_gpu);
+                append_switch(command_line, &s_shm);
+            }
+        }
+    }
+
     unsafe extern "C" fn on_register_custom_schemes(
         _self: *mut _cef_app_t,
         registrar: *mut _cef_scheme_registrar_t,
@@ -62,8 +83,8 @@ impl JorenCefApp {
         let reg = &*registrar;
         if let Some(add_custom_scheme) = reg.add_custom_scheme {
             let scheme_name = cef_string_from_str("joren");
-            // Standard (1) | Display Isolated (4) | Secure (8) | CORS (16) | Fetch (64) = 93
-            let options = 1 | 4 | 8 | 16 | 64;
+            // Standard (1) | Secure (8) | CORS (16) | Fetch (64) = 89
+            let options = 1 | 8 | 16 | 64;
             let res = add_custom_scheme(registrar, &scheme_name, options);
             crate::cef::log_startup(
                 "SCHEME",

@@ -540,10 +540,10 @@ unsafe fn run_cef_main(
         instance: HINSTANCE(h_instance as *mut _),
     };
 
-    let app = JorenCefApp::new();
+    let app_sub = JorenCefApp::new();
 
     // Subprocess execution: handles renderer, gpu, utility, etc.
-    let exit_code = (api.execute_process)(&main_args, app, sandbox_info);
+    let exit_code = (api.execute_process)(&main_args, app_sub, sandbox_info);
     if exit_code >= 0 {
         return exit_code;
     }
@@ -570,10 +570,11 @@ unsafe fn run_cef_main(
     settings.log_file = cef_string_from_str(&cef_log_path.to_string_lossy());
     settings.log_severity = cef_log_severity_t::LOGSEVERITY_INFO;
 
+    let app_main = JorenCefApp::new();
     let init_res = (api.initialize)(
         &main_args,
         &settings,
-        app,
+        app_main,
         sandbox_info,
     );
 

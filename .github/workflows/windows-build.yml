@@ -181,21 +181,48 @@ jobs:
             -PassThru -Wait
 
           Write-Host "Smoke test process exit code: $($proc.ExitCode)"
-          if (Test-Path $stdoutLog) {
-              Write-Host "=== smoke_stdout.log ==="
-              Get-Content $stdoutLog
-          }
-          if (Test-Path $stderrLog) {
-              Write-Host "=== smoke_stderr.log ==="
-              Get-Content $stderrLog
-          }
+          "### Sandboxed Launch Smoke Test Report" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "**Process Exit Code**: $($proc.ExitCode)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
           if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
               Write-Host "=== startup.log ==="
               Get-Content "$env:APPDATA\Joren\logs\startup.log"
+              "<details><summary><b>startup.log</b></summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```text" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Get-Content "$env:APPDATA\Joren\logs\startup.log" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
           if (Test-Path "$env:APPDATA\Joren\logs\cef.log") {
               Write-Host "=== cef.log ==="
               Get-Content "$env:APPDATA\Joren\logs\cef.log"
+              "<details><summary><b>cef.log</b></summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```text" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Get-Content "$env:APPDATA\Joren\logs\cef.log" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          if (Test-Path $stdoutLog) {
+              Write-Host "=== smoke_stdout.log ==="
+              Get-Content $stdoutLog
+              "<details><summary><b>smoke_stdout.log</b></summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```text" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Get-Content $stdoutLog | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+          if (Test-Path $stderrLog) {
+              Write-Host "=== smoke_stderr.log ==="
+              Get-Content $stderrLog
+              "<details><summary><b>smoke_stderr.log</b></summary>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```text" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              Get-Content $stderrLog | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "```" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+              "</details>" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
           }
           if (Test-Path "staging\joren\debug.log") {
               Write-Host "=== staging\joren\debug.log ==="
@@ -207,6 +234,18 @@ jobs:
               exit 1
           }
           Write-Host "Native smoke test PASSED cleanly with exit code 0."
+
+      - name: Upload Diagnostic Logs on Any Outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: joren-diagnostic-logs
+          path: |
+            smoke_*.log
+            portable_smoke_*.log
+            staging\joren\*.log
+            ${{ env.APPDATA }}\Joren\logs\*.log
+          if-no-files-found: ignore
 
       - name: Setup NSIS Compiler
         shell: pwsh
