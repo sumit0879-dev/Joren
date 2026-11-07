@@ -92,9 +92,31 @@ pub fn clear_main_browser() {
 
 static SMOKE_TEST_PASSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+pub fn close_main_window() {
+    #[cfg(target_os = "windows")]
+    {
+        let guard = SURFACE_CONTROLLER.lock().unwrap();
+        if let Some(ctrl) = guard.as_ref() {
+            if ctrl.main_window_hwnd != 0 {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        ctrl.main_window_hwnd as *mut _,
+                        windows_sys::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                        0,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub fn notify_smoke_test_success() {
     log_startup("SMOKE_TEST", "notify_smoke_test_success called: React UI & frontend IPC roundtrip verified!");
     SMOKE_TEST_PASSED.store(true, std::sync::atomic::Ordering::SeqCst);
+    if std::env::args().any(|a| a == "--smoke-test") {
+        close_main_window();
+    }
 }
 
 pub fn is_smoke_test_passed() -> bool {
@@ -214,15 +236,18 @@ impl JorenLifeSpanHandler {
 
     unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
         let this = (base as *mut Self).as_ref().unwrap();
-        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prev = this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        log_startup("LIFESPAN_REF", &format!("add_ref: {} -> {}", prev, prev + 1));
     }
 
     unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
         let this = (base as *mut Self).as_ref().unwrap();
         let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        log_startup("LIFESPAN_REF", &format!("release: {} -> {}", prev, prev - 1));
         if prev == 1 {
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let _ = Box::from_raw(base as *mut Self);
+            log_startup("LIFESPAN_REF", "JorenLifeSpanHandler DEALLOCATED");
             1
         } else {
             0
@@ -302,15 +327,18 @@ impl JorenLoadHandler {
 
     unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
         let this = (base as *mut Self).as_ref().unwrap();
-        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prev = this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        log_startup("LOAD_REF", &format!("add_ref: {} -> {}", prev, prev + 1));
     }
 
     unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
         let this = (base as *mut Self).as_ref().unwrap();
         let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        log_startup("LOAD_REF", &format!("release: {} -> {}", prev, prev - 1));
         if prev == 1 {
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
             let _ = Box::from_raw(base as *mut Self);
+            log_startup("LOAD_REF", "JorenLoadHandler DEALLOCATED");
             1
         } else {
             0
@@ -430,15 +458,28 @@ impl JorenCefClient {
 
     unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
         let this = (base as *mut Self).as_ref().unwrap();
-        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let prev = this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        log_startup("CLIENT_REF", &format!("add_ref: {} -> {}", prev, prev + 1));
     }
 
     unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
         let this = (base as *mut Self).as_ref().unwrap();
         let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        log_startup("CLIENT_REF", &format!("release: {} -> {}", prev, prev - 1));
         if prev == 1 {
             std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
-            let _ = Box::from_raw(base as *mut Self);
+            let client = Box::from_raw(base as *mut Self);
+            if !client.life_span.is_null() {
+                if let Some(rel) = (*client.life_span).base.release {
+                    rel(&mut (*client.life_span).base);
+                }
+            }
+            if !client.load.is_null() {
+                if let Some(rel) = (*client.load).base.release {
+                    rel(&mut (*client.load).base);
+                }
+            }
+            log_startup("CLIENT_REF", "JorenCefClient DEALLOCATED");
             1
         } else {
             0
@@ -457,11 +498,21 @@ impl JorenCefClient {
 
     unsafe extern "C" fn get_life_span_handler(self_: *mut _cef_client_t) -> *mut _cef_life_span_handler_t {
         let this = (self_ as *mut Self).as_ref().unwrap();
+        if !this.life_span.is_null() {
+            if let Some(add_ref) = (*this.life_span).base.add_ref {
+                add_ref(&mut (*this.life_span).base);
+            }
+        }
         this.life_span
     }
 
     unsafe extern "C" fn get_load_handler(self_: *mut _cef_client_t) -> *mut _cef_load_handler_t {
         let this = (self_ as *mut Self).as_ref().unwrap();
+        if !this.load.is_null() {
+            if let Some(add_ref) = (*this.load).base.add_ref {
+                add_ref(&mut (*this.load).base);
+            }
+        }
         this.load
     }
 }
@@ -649,9 +700,7 @@ unsafe fn run_cef_main(
                 if is_smoke_test_passed() {
                     log_startup("SMOKE_TEST", "Verified React UI mounted & frontend-to-Rust IPC roundtrip succeeded!");
                     log_startup("SMOKE_TEST", "All smoke test checks PASSED cleanly. Exiting message loop.");
-                    if let Some(api) = get_cef_api() {
-                        (api.quit_message_loop)();
-                    }
+                    close_main_window();
                     return;
                 }
             }
