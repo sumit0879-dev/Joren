@@ -1,8 +1,10 @@
 pub mod api;
+pub mod app;
 pub mod scheme;
 pub mod types;
 
 use api::{cef_string_from_str, cef_string_to_string, get_cef_api};
+use app::JorenCefApp;
 use scheme::{set_command_dispatcher, JorenSchemeHandlerFactory};
 use std::ffi::c_void;
 use std::os::raw::c_int;
@@ -86,6 +88,17 @@ pub fn set_main_browser(browser: *mut _cef_browser_t) {
 pub fn clear_main_browser() {
     let mut guard = MAIN_BROWSER.lock().unwrap();
     *guard = None;
+}
+
+static SMOKE_TEST_PASSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn notify_smoke_test_success() {
+    log_startup("SMOKE_TEST", "notify_smoke_test_success called: React UI & frontend IPC roundtrip verified!");
+    SMOKE_TEST_PASSED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn is_smoke_test_passed() -> bool {
+    SMOKE_TEST_PASSED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 pub fn dispatch_event_to_browser(event_name: &str, payload_json: &str) {
@@ -174,6 +187,7 @@ pub fn update_browser_surface(bounds: Option<cef_rect_t>, show: bool) {
     }
 }
 
+#[repr(C)]
 pub struct JorenLifeSpanHandler {
     pub base: _cef_life_span_handler_t,
     ref_count: std::sync::atomic::AtomicI32,
@@ -262,6 +276,7 @@ impl JorenLifeSpanHandler {
     }
 }
 
+#[repr(C)]
 pub struct JorenLoadHandler {
     pub base: _cef_load_handler_t,
     ref_count: std::sync::atomic::AtomicI32,
@@ -323,6 +338,39 @@ impl JorenLoadHandler {
             if let Some(is_main) = f.is_main {
                 if is_main(frame) != 0 {
                     log_startup("LOAD", &format!("Main UI page loaded successfully (HTTP status: {})", http_status_code));
+                    if std::env::args().any(|a| a == "--smoke-test") {
+                        if let Some(exec_js) = f.execute_java_script {
+                            log_startup("SMOKE_TEST", "Injecting smoke-test JavaScript probe into main frame...");
+                            let script = cef_string_from_str(r#"
+                                (function() {
+                                    let attempts = 0;
+                                    const maxAttempts = 60;
+                                    const check = setInterval(async () => {
+                                        attempts++;
+                                        if (window.__JOREN_APP_READY__) {
+                                            clearInterval(check);
+                                            console.log("[SMOKE_TEST] window.__JOREN_APP_READY__ confirmed true in page!");
+                                            try {
+                                                const res = await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'smoke_test_verify', args: { react_ready: true } })
+                                                });
+                                                console.log("[SMOKE_TEST] IPC pingback sent, status:", res.status);
+                                            } catch (e) {
+                                                console.error("[SMOKE_TEST] IPC pingback failed:", e);
+                                            }
+                                        } else if (attempts >= maxAttempts) {
+                                            clearInterval(check);
+                                            console.error("[SMOKE_TEST] Timeout waiting for window.__JOREN_APP_READY__");
+                                        }
+                                    }, 100);
+                                })();
+                            "#);
+                            let url = cef_string_from_str("joren://app/smoke-test.js");
+                            exec_js(frame, &script, &url, 1);
+                        }
+                    }
                 }
             }
         }
@@ -350,6 +398,7 @@ impl JorenLoadHandler {
     }
 }
 
+#[repr(C)]
 pub struct JorenCefClient {
     pub base: _cef_client_t,
     pub life_span: *mut _cef_life_span_handler_t,
@@ -491,8 +540,10 @@ unsafe fn run_cef_main(
         instance: HINSTANCE(h_instance as *mut _),
     };
 
+    let app = JorenCefApp::new();
+
     // Subprocess execution: handles renderer, gpu, utility, etc.
-    let exit_code = (api.execute_process)(&main_args, std::ptr::null_mut(), sandbox_info);
+    let exit_code = (api.execute_process)(&main_args, app, sandbox_info);
     if exit_code >= 0 {
         return exit_code;
     }
@@ -522,7 +573,7 @@ unsafe fn run_cef_main(
     let init_res = (api.initialize)(
         &main_args,
         &settings,
-        std::ptr::null_mut(),
+        app,
         sandbox_info,
     );
 
@@ -534,12 +585,18 @@ unsafe fn run_cef_main(
     }
     log_startup("INIT", "cef_initialize succeeded.");
 
-    // Register custom scheme: joren://app
+    // Register custom scheme handler factory: joren://app
     let scheme_name = cef_string_from_str("joren");
     let domain_name = cef_string_from_str("app");
     let factory = JorenSchemeHandlerFactory::new();
-    (api.register_scheme_handler_factory)(&scheme_name, &domain_name, factory);
-    log_startup("SCHEME", "Registered scheme joren://app");
+    let reg_res = (api.register_scheme_handler_factory)(&scheme_name, &domain_name, factory);
+    if reg_res == 0 {
+        let msg = "cef_register_scheme_handler_factory failed for joren://app";
+        log_startup("SCHEME_ERROR", msg);
+        show_fatal_error_dialog("Joren Scheme Error", msg);
+        return 1;
+    }
+    log_startup("SCHEME", "Registered scheme handler factory for joren://app (result=1)");
 
     // Initialize backend core (database, settings, providers, tools, voice)
     let app_handle = tauri::AppHandle::default();
@@ -566,21 +623,40 @@ unsafe fn run_cef_main(
         dispatch_event_to_browser(event, payload);
     });
 
-    // Check for --smoke-test CLI flag
+    // Verify core dispatch responsiveness before continuing
+    match core.dispatch("ping", &serde_json::json!({})) {
+        Ok(val) => {
+            log_startup("CORE_PING", &format!("Internal core ping succeeded: {}", val));
+        }
+        Err(e) => {
+            let msg = format!("Backend core failed to respond to ping:\n{}", e);
+            log_startup("CORE_PING", &msg);
+            show_fatal_error_dialog("Joren Core Error", &msg);
+            return 1;
+        }
+    }
+
+    // Check for --smoke-test CLI flag: Spawn watchdog to verify full browser + React UI load + IPC roundtrip
     let is_smoke_test = std::env::args().any(|arg| arg == "--smoke-test");
     if is_smoke_test {
-        log_startup("SMOKE_TEST", "Executing smoke test verification...");
-        match core.dispatch("ping", &serde_json::json!({})) {
-            Ok(val) => {
-                log_startup("SMOKE_TEST", &format!("Smoke test ping succeeded: {}", val));
-                log_startup("SMOKE_TEST", "All smoke test checks PASSED cleanly.");
-                std::process::exit(0);
+        log_startup("SMOKE_TEST", "Spawning smoke-test watchdog thread (25s timeout)...");
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(25);
+            while start.elapsed() < timeout {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if is_smoke_test_passed() {
+                    log_startup("SMOKE_TEST", "Verified React UI mounted & frontend-to-Rust IPC roundtrip succeeded!");
+                    log_startup("SMOKE_TEST", "All smoke test checks PASSED cleanly. Exiting message loop.");
+                    if let Some(api) = get_cef_api() {
+                        (api.quit_message_loop)();
+                    }
+                    return;
+                }
             }
-            Err(e) => {
-                log_startup("SMOKE_TEST", &format!("Smoke test ping FAILED: {}", e));
-                std::process::exit(1);
-            }
-        }
+            log_startup("SMOKE_TEST", "FATAL: Watchdog timeout (25s) waiting for React UI mounting and smoke_test_verify IPC!");
+            std::process::exit(1);
+        });
     }
 
     // Initialize Win32 Host Window

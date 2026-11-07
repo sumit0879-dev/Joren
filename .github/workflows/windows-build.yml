@@ -253,7 +253,48 @@ jobs:
           }
           Write-Host "Compiled NSIS installer: staging/joren-setup-x64.exe"
 
-          # 3. Generate SHA256 checksums
+      - name: Validate Portable Package Extraction & Runtime Smoke Test
+        shell: pwsh
+        run: |
+          Write-Host "Extracting and testing portable ZIP package runtime..."
+          $testExtractDir = Join-Path $PWD "staging\test-portable-extract"
+          Expand-Archive -Path "staging\joren-windows-x64-portable.zip" -DestinationPath $testExtractDir -Force
+          $portableExe = Join-Path $testExtractDir "joren.exe"
+          $testOut = Join-Path $PWD "portable_smoke_stdout.log"
+          $testErr = Join-Path $PWD "portable_smoke_stderr.log"
+
+          $proc = Start-Process -FilePath $portableExe `
+            -ArgumentList "--smoke-test" `
+            -WorkingDirectory $testExtractDir `
+            -RedirectStandardOutput $testOut `
+            -RedirectStandardError $testErr `
+            -PassThru -Wait
+
+          Write-Host "Portable package smoke test exit code: $($proc.ExitCode)"
+          if (Test-Path $testOut) {
+              Write-Host "=== portable_smoke_stdout.log ==="
+              Get-Content $testOut
+          }
+          if (Test-Path $testErr) {
+              Write-Host "=== portable_smoke_stderr.log ==="
+              Get-Content $testErr
+          }
+          if (Test-Path "$env:APPDATA\Joren\logs\startup.log") {
+              Write-Host "=== startup.log ==="
+              Get-Content "$env:APPDATA\Joren\logs\startup.log"
+          }
+
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "Portable package smoke test FAILED with exit code $($proc.ExitCode)"
+              exit 1
+          }
+          Write-Host "Portable package smoke test PASSED cleanly with exit code 0."
+          Remove-Item -Recurse -Force $testExtractDir
+
+      - name: Generate Checksums
+        shell: pwsh
+        run: |
+          # Generate SHA256 checksums
           Get-ChildItem -Path "staging" | Where-Object { $_.Extension -in '.zip', '.exe' } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $($_.Path | Split-Path -Leaf)" } | Set-Content staging\SHA256.txt
           Write-Host "Generated SHA256 checksums:"
           Get-Content staging\SHA256.txt

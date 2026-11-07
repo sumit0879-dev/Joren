@@ -581,9 +581,46 @@ impl JorenCore {
                 Ok(serde_json::json!({ "success": true }))
             }
 
+            "browser_set_bounds" | "browser_set_bounds_all" => {
+                Ok(serde_json::json!({ "success": true }))
+            }
+
+            "browser_go_back" | "browser_go_back_tab" => {
+                Ok(serde_json::json!({ "success": true }))
+            }
+
+            "browser_go_forward" | "browser_go_forward_tab" => {
+                Ok(serde_json::json!({ "success": true }))
+            }
+
+            "browser_reload" | "browser_reload_tab" => {
+                Ok(serde_json::json!({ "success": true }))
+            }
+
+            "realtime_voice_stop" => {
+                let res = tokio_rt.block_on(crate::realtime_voice_stop(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "realtime_voice_start" => {
+                let conversation_id = args.get("conversationId").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+                let provider_id = args.get("providerId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::realtime_voice_start(conversation_id, provider_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "smoke_test_verify" => {
+                let react_ready = args.get("react_ready").and_then(|v| v.as_bool()).unwrap_or(false);
+                println!("[CORE] smoke_test_verify command invoked from frontend: react_ready={}", react_ready);
+                if react_ready {
+                    crate::cef::notify_smoke_test_success();
+                }
+                Ok(serde_json::json!({ "success": true, "verified": react_ready }))
+            }
+
             _ => {
-                eprintln!("[DISPATCHER] Fallback handled for command: {}", cmd);
-                Ok(serde_json::json!({ "success": true, "fallback": true, "cmd": cmd }))
+                eprintln!("[DISPATCHER] Unknown command received: {}", cmd);
+                Err(format!("Unknown or unsupported command: '{}'", cmd))
             }
         }
     }

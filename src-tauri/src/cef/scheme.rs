@@ -14,6 +14,7 @@ pub fn set_command_dispatcher(d: CommandDispatcher) {
     *guard = Some(d);
 }
 
+#[repr(C)]
 pub struct JorenResourceHandler {
     pub base: _cef_resource_handler_t,
     pub response_data: Vec<u8>,
@@ -143,6 +144,7 @@ impl JorenResourceHandler {
     unsafe extern "C" fn cancel(_self: *mut _cef_resource_handler_t) {}
 }
 
+#[repr(C)]
 pub struct JorenSchemeHandlerFactory {
     pub base: _cef_scheme_handler_factory_t,
     ref_count: std::sync::atomic::AtomicI32,
@@ -212,8 +214,13 @@ impl JorenSchemeHandlerFactory {
             return std::ptr::null_mut();
         };
 
+        // Strictly enforce trusted app origin: joren://app/
+        if !url_str.starts_with("joren://app") {
+            return std::ptr::null_mut();
+        }
+
         // Check if IPC endpoint: joren://app/api/invoke
-        if url_str.contains("/api/invoke") {
+        if url_str.starts_with("joren://app/api/invoke") {
             let mut post_bytes = Vec::new();
             if let Some(get_post_data) = req.get_post_data {
                 let post_data = get_post_data(request);
@@ -249,7 +256,7 @@ impl JorenSchemeHandlerFactory {
             }
 
             // Parse JSON { cmd, args }
-            let mut response_body = serde_json::json!({ "error": "Invalid request" });
+            let mut response_body = serde_json::json!({ "error": "Invalid JSON request payload" });
             let mut status = 400;
 
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&post_bytes) {
@@ -270,9 +277,11 @@ impl JorenSchemeHandlerFactory {
                             }
                         }
                     } else {
-                        response_body = serde_json::json!({ "error": "Dispatcher not registered" });
+                        response_body = serde_json::json!({ "error": "IPC dispatcher not registered" });
                         status = 500;
                     }
+                } else {
+                    response_body = serde_json::json!({ "error": "Missing 'cmd' parameter in request" });
                 }
             }
 
@@ -281,56 +290,128 @@ impl JorenSchemeHandlerFactory {
         }
 
         // Static bundled assets: joren://app/...
-        let path_part = if let Some(idx) = url_str.find("joren://app") {
-            let sub = &url_str[idx + "joren://app".len()..];
-            let clean = sub.split('?').next().unwrap_or("/").split('#').next().unwrap_or("/");
-            if clean.is_empty() || clean == "/" {
-                "/index.html"
-            } else {
-                clean
-            }
+        let path_and_query = if url_str.len() > "joren://app".len() {
+            &url_str["joren://app".len()..]
         } else {
             "/index.html"
         };
 
+        let clean_path = path_and_query.split('?').next().unwrap_or("/").split('#').next().unwrap_or("/");
+
+        // Simple percent decoding
+        fn percent_decode(input: &str) -> String {
+            let mut bytes = Vec::new();
+            let mut iter = input.bytes();
+            while let Some(b) = iter.next() {
+                if b == b'%' {
+                    let h1 = iter.next();
+                    let h2 = iter.next();
+                    if let (Some(c1), Some(c2)) = (h1, h2) {
+                        let hex = [c1, c2];
+                        if let Ok(val) = u8::from_str_radix(std::str::from_utf8(&hex).unwrap_or(""), 16) {
+                            bytes.push(val);
+                            continue;
+                        }
+                        bytes.push(b'%');
+                        bytes.push(c1);
+                        bytes.push(c2);
+                    } else {
+                        bytes.push(b'%');
+                        if let Some(c) = h1 { bytes.push(c); }
+                    }
+                } else {
+                    bytes.push(b);
+                }
+            }
+            String::from_utf8_lossy(&bytes).to_string()
+        }
+
+        let decoded = percent_decode(clean_path);
+        let normalized = decoded.replace('\\', "/");
+        let trimmed = normalized.trim_start_matches('/');
+
+        // Reject path traversal
+        if trimmed.contains("..") || trimmed.contains(':') {
+            crate::cef::log_startup("SECURITY", &format!("Blocked path traversal attempt: {}", url_str));
+            return JorenResourceHandler::new(b"Forbidden".to_vec(), "text/plain".to_string(), 403);
+        }
+
+        let sub_path = if trimmed.is_empty() {
+            "index.html"
+        } else {
+            trimmed
+        };
+
+        // Determine if request expects a static file by checking if last segment has an extension
+        let last_segment = sub_path.rsplit('/').next().unwrap_or(sub_path);
+        let has_extension = last_segment.contains('.') && !last_segment.starts_with('.');
+
         // Locate bundled app folder
         let mut app_dir = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
         app_dir.pop();
-        let mut file_path = app_dir.join("app").join(path_part.trim_start_matches('/'));
+        let mut file_path = app_dir.join("app").join(sub_path);
 
         if !file_path.exists() {
             // Check dev path
-            let dev_path = PathBuf::from("build").join(path_part.trim_start_matches('/'));
+            let dev_path = PathBuf::from("build").join(sub_path);
             if dev_path.exists() {
                 file_path = dev_path;
-            } else {
-                // SPA fallback to index.html
+            } else if !has_extension {
+                // SPA client-side route fallback (only for extensionless route paths, e.g. /chat)
                 let index_path = app_dir.join("app").join("index.html");
                 if index_path.exists() {
                     file_path = index_path;
+                } else {
+                    let dev_index = PathBuf::from("build").join("index.html");
+                    if dev_index.exists() {
+                        file_path = dev_index;
+                    }
                 }
             }
         }
 
-        let mime = if path_part.ends_with(".html") {
+        let path_lower = file_path.to_string_lossy().to_lowercase();
+        let mime = if path_lower.ends_with(".html") || path_lower.ends_with(".htm") {
             "text/html; charset=utf-8"
-        } else if path_part.ends_with(".js") {
+        } else if path_lower.ends_with(".js") || path_lower.ends_with(".mjs") {
             "application/javascript; charset=utf-8"
-        } else if path_part.ends_with(".css") {
+        } else if path_lower.ends_with(".css") {
             "text/css; charset=utf-8"
-        } else if path_part.ends_with(".png") {
-            "image/png"
-        } else if path_part.ends_with(".svg") {
+        } else if path_lower.ends_with(".json") {
+            "application/json; charset=utf-8"
+        } else if path_lower.ends_with(".svg") {
             "image/svg+xml"
-        } else if path_part.ends_with(".json") {
-            "application/json"
+        } else if path_lower.ends_with(".png") {
+            "image/png"
+        } else if path_lower.ends_with(".jpg") || path_lower.ends_with(".jpeg") {
+            "image/jpeg"
+        } else if path_lower.ends_with(".webp") {
+            "image/webp"
+        } else if path_lower.ends_with(".gif") {
+            "image/gif"
+        } else if path_lower.ends_with(".ico") {
+            "image/x-icon"
+        } else if path_lower.ends_with(".woff2") {
+            "font/woff2"
+        } else if path_lower.ends_with(".woff") {
+            "font/woff"
+        } else if path_lower.ends_with(".ttf") {
+            "font/ttf"
+        } else if path_lower.ends_with(".wasm") {
+            "application/wasm"
         } else {
             "application/octet-stream"
         };
 
         match std::fs::read(&file_path) {
-            Ok(bytes) => JorenResourceHandler::new(bytes, mime.to_string(), 200),
-            Err(_) => JorenResourceHandler::new(b"Not Found".to_vec(), "text/plain".to_string(), 404),
+            Ok(bytes) => {
+                crate::cef::log_startup("RESOURCE_200", &format!("200 OK: /{} ({} bytes, mime={})", sub_path, bytes.len(), mime));
+                JorenResourceHandler::new(bytes, mime.to_string(), 200)
+            }
+            Err(e) => {
+                crate::cef::log_startup("RESOURCE_404", &format!("404 Not Found: /{} (err={})", sub_path, e));
+                JorenResourceHandler::new(b"404 Not Found".to_vec(), "text/plain".to_string(), 404)
+            }
         }
     }
 }
