@@ -128,10 +128,22 @@ impl JorenResourceHandler {
                 set_status(response, this.response_status);
             }
             if let Some(set_mime) = resp.set_mime_type {
-                let mime_cef = cef_string_from_str(&this.response_mime);
+                let pure_mime = this.response_mime.split(';').next().unwrap_or(&this.response_mime).trim();
+                let mime_cef = cef_string_from_str(pure_mime);
                 set_mime(response, &mime_cef);
             }
             if let Some(set_header) = resp.set_header_by_name {
+                let content_type = if this.response_mime.contains("charset") {
+                    this.response_mime.clone()
+                } else if this.response_mime.starts_with("text/") || this.response_mime == "application/json" {
+                    format!("{}; charset=utf-8", this.response_mime)
+                } else {
+                    this.response_mime.clone()
+                };
+                let h_ct_name = cef_string_from_str("Content-Type");
+                let h_ct_val = cef_string_from_str(&content_type);
+                set_header(response, &h_ct_name, &h_ct_val, 1);
+
                 let h_origin_name = cef_string_from_str("Access-Control-Allow-Origin");
                 let h_origin_val = cef_string_from_str("*");
                 set_header(response, &h_origin_name, &h_origin_val, 1);
@@ -470,13 +482,13 @@ impl JorenSchemeHandlerFactory {
 
         let path_lower = file_path.to_string_lossy().to_lowercase();
         let mime = if path_lower.ends_with(".html") || path_lower.ends_with(".htm") {
-            "text/html; charset=utf-8"
+            "text/html"
         } else if path_lower.ends_with(".js") || path_lower.ends_with(".mjs") {
-            "text/javascript; charset=utf-8"
+            "text/javascript"
         } else if path_lower.ends_with(".css") {
-            "text/css; charset=utf-8"
+            "text/css"
         } else if path_lower.ends_with(".json") {
-            "application/json; charset=utf-8"
+            "application/json"
         } else if path_lower.ends_with(".svg") {
             "image/svg+xml"
         } else if path_lower.ends_with(".png") {
