@@ -106,6 +106,19 @@ impl JorenResourceHandler {
                 let mime_cef = cef_string_from_str(&this.response_mime);
                 set_mime(response, &mime_cef);
             }
+            if let Some(set_header) = resp.set_header_by_name {
+                let h_origin_name = cef_string_from_str("Access-Control-Allow-Origin");
+                let h_origin_val = cef_string_from_str("*");
+                set_header(response, &h_origin_name, &h_origin_val, 1);
+
+                let h_methods_name = cef_string_from_str("Access-Control-Allow-Methods");
+                let h_methods_val = cef_string_from_str("GET, POST, OPTIONS, HEAD");
+                set_header(response, &h_methods_name, &h_methods_val, 1);
+
+                let h_headers_name = cef_string_from_str("Access-Control-Allow-Headers");
+                let h_headers_val = cef_string_from_str("Content-Type, Authorization, *");
+                set_header(response, &h_headers_name, &h_headers_val, 1);
+            }
         }
         if !response_length.is_null() {
             *response_length = this.response_data.len() as i64;
@@ -214,13 +227,27 @@ impl JorenSchemeHandlerFactory {
             return std::ptr::null_mut();
         };
 
-        // Strictly enforce trusted app origin: joren://app/
-        if !url_str.starts_with("joren://app") {
+        let method = if let Some(get_method) = req.get_method {
+            let m_ptr = get_method(request);
+            cef_string_userfree_to_string_and_free(m_ptr)
+        } else {
+            "GET".to_string()
+        };
+
+        crate::cef::log_startup("SCHEME_REQ", &format!("{} {}", method, url_str));
+
+        if method.eq_ignore_ascii_case("OPTIONS") {
+            return JorenResourceHandler::new(Vec::new(), "text/plain".to_string(), 200);
+        }
+
+        // Strictly enforce trusted app scheme: joren://
+        if !url_str.starts_with("joren://") {
+            crate::cef::log_startup("SECURITY", &format!("Rejecting request with non-joren scheme: {}", url_str));
             return std::ptr::null_mut();
         }
 
-        // Check if IPC endpoint: joren://app/api/invoke
-        if url_str.starts_with("joren://app/api/invoke") {
+        // Check if IPC endpoint: /api/invoke
+        if url_str.contains("/api/invoke") {
             let mut post_bytes = Vec::new();
             if let Some(get_post_data) = req.get_post_data {
                 let post_data = get_post_data(request);
@@ -289,9 +316,11 @@ impl JorenSchemeHandlerFactory {
             return JorenResourceHandler::new(resp_bytes, "application/json".to_string(), status);
         }
 
-        // Static bundled assets: joren://app/...
-        let path_and_query = if url_str.len() > "joren://app".len() {
+        // Static bundled assets: joren://app/... or joren:///...
+        let path_and_query = if url_str.starts_with("joren://app") {
             &url_str["joren://app".len()..]
+        } else if url_str.starts_with("joren://") {
+            &url_str["joren://".len()..]
         } else {
             "/index.html"
         };
@@ -374,7 +403,7 @@ impl JorenSchemeHandlerFactory {
         let mime = if path_lower.ends_with(".html") || path_lower.ends_with(".htm") {
             "text/html; charset=utf-8"
         } else if path_lower.ends_with(".js") || path_lower.ends_with(".mjs") {
-            "application/javascript; charset=utf-8"
+            "text/javascript; charset=utf-8"
         } else if path_lower.ends_with(".css") {
             "text/css; charset=utf-8"
         } else if path_lower.ends_with(".json") {

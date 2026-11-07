@@ -372,9 +372,12 @@ impl JorenLoadHandler {
                             let script = cef_string_from_str(r#"
                                 (function() {
                                     let attempts = 0;
-                                    const maxAttempts = 60;
+                                    const maxAttempts = 220;
                                     const check = setInterval(async () => {
                                         attempts++;
+                                        if (attempts % 10 === 0) {
+                                            console.log("[SMOKE_TEST] waiting for window.__JOREN_APP_READY__ (attempt " + attempts + "), script_loaded=" + !!window.__JOREN_SCRIPT_LOADED__);
+                                        }
                                         if (window.__JOREN_APP_READY__) {
                                             clearInterval(check);
                                             console.log("[SMOKE_TEST] window.__JOREN_APP_READY__ confirmed true in page!");
@@ -390,7 +393,7 @@ impl JorenLoadHandler {
                                             }
                                         } else if (attempts >= maxAttempts) {
                                             clearInterval(check);
-                                            console.error("[SMOKE_TEST] Timeout waiting for window.__JOREN_APP_READY__");
+                                            console.error("[SMOKE_TEST] Timeout waiting for window.__JOREN_APP_READY__, script_loaded=" + !!window.__JOREN_SCRIPT_LOADED__);
                                         }
                                     }, 100);
                                 })();
@@ -637,7 +640,7 @@ unsafe fn run_cef_main(
     }
     log_startup("INIT", "cef_initialize succeeded.");
 
-    // Register custom scheme handler factory: joren://app
+    // Register custom scheme handler factory: joren://app and joren:// (all domains)
     let scheme_name = cef_string_from_str("joren");
     let domain_name = cef_string_from_str("app");
     let factory = JorenSchemeHandlerFactory::new();
@@ -649,6 +652,11 @@ unsafe fn run_cef_main(
         return 1;
     }
     log_startup("SCHEME", "Registered scheme handler factory for joren://app (result=1)");
+
+    let empty_domain = cef_string_from_str("");
+    let factory_global = JorenSchemeHandlerFactory::new();
+    let reg_res_global = (api.register_scheme_handler_factory)(&scheme_name, &empty_domain, factory_global);
+    log_startup("SCHEME", &format!("Registered global scheme handler factory for joren:// (result={})", reg_res_global));
 
     // Initialize backend core (database, settings, providers, tools, voice)
     let app_handle = tauri::AppHandle::default();
