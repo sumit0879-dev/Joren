@@ -705,6 +705,12 @@ unsafe fn run_cef_main(
             }
         }
 
+        let h_module = if h_instance != 0 {
+            h_instance as *mut c_void
+        } else {
+            windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) as *mut c_void
+        };
+
         let class_name = windows_sys::core::w!("JorenMainWindow");
         let wnd_class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -712,7 +718,7 @@ unsafe fn run_cef_main(
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: h_instance as *mut c_void,
+            hInstance: h_module,
             hIcon: std::ptr::null_mut(),
             hCursor: std::ptr::null_mut(),
             hbrBackground: std::ptr::null_mut(),
@@ -734,18 +740,22 @@ unsafe fn run_cef_main(
             900,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            h_instance as *mut c_void,
+            h_module,
             std::ptr::null(),
         );
 
-        init_surface_controller(main_hwnd as isize);
-        ShowWindow(main_hwnd, SW_SHOW);
-
-        // Create main UI browser window attached to host HWND
         let mut win_info: cef_window_info_t = std::mem::zeroed();
         win_info.size = std::mem::size_of::<cef_window_info_t>();
-        win_info.parent_window = HWND(main_hwnd as *mut _);
-        win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
+        if !main_hwnd.is_null() {
+            init_surface_controller(main_hwnd as isize);
+            ShowWindow(main_hwnd, SW_SHOW);
+            win_info.parent_window = HWND(main_hwnd as *mut _);
+            win_info.style = 0x50000000; // WS_CHILD | WS_VISIBLE
+        } else {
+            log_startup("WINDOW", "Host HWND is NULL; creating CEF as top-level window");
+            win_info.parent_window = HWND(std::ptr::null_mut());
+            win_info.style = 0x10cf0000; // WS_VISIBLE | WS_OVERLAPPEDWINDOW
+        }
         win_info.bounds = cef_rect_t {
             x: 0,
             y: 0,
