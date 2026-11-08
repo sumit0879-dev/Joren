@@ -464,7 +464,7 @@ impl JorenLoadHandler {
                     };
                     tabs::note_navigation(_browser, page_url.clone());
                     log_startup("LOAD", &format!("Main frame loaded (HTTP status: {http_status_code}) url={page_url}"));
-                    if std::env::args().any(|a| a == "--smoke-test") {
+                    if std::env::args().any(|a| a == "--smoke-test") && page_url.starts_with("joren://app") {
                         if let Some(exec_js) = f.execute_java_script {
                             log_startup("SMOKE_TEST", "Injecting smoke-test JavaScript probe into main frame...");
                             let script = cef_string_from_str(r#"

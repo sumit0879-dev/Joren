@@ -377,6 +377,18 @@ unsafe fn exec_js(browser: *mut _cef_browser_t, script: &str) -> Result<(), Stri
     result
 }
 
+pub fn extract_title_from_url(url: &str) -> Option<String> {
+    if url.starts_with("data:text/html") {
+        if let Some(start) = url.find("<title>") {
+            let rest = &url[start + 7..];
+            if let Some(end) = rest.find("</title>") {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Called from the lifespan handler. Returns true when the browser is a website tab.
 pub unsafe fn claim_created_browser(browser: *mut _cef_browser_t, hwnd: isize) -> bool {
     let pending_id = state().lock().unwrap().pending.pop_front();
@@ -393,10 +405,20 @@ pub unsafe fn claim_created_browser(browser: *mut _cef_browser_t, hwnd: isize) -
         if !url.is_empty() {
             tab.url = url;
         }
+        if let Some(extracted) = extract_title_from_url(&tab.url) {
+            tab.title = extracted;
+        }
         let bounds = tab.bounds;
         let show = !tab.is_internal && guard.visible && guard.active_id.as_deref() == Some(id.as_str());
         drop(guard);
         place_hwnd(hwnd, bounds, show);
+        let b = &*browser;
+        if let Some(get_host) = b.get_host {
+            let host = get_host(browser);
+            if !host.is_null() {
+                ensure_devtools_observer_on_host(host);
+            }
+        }
         log_startup("TAB", &format!("CEF tab '{id}' created hwnd={hwnd:#x} show={show}"));
     } else {
         drop(guard);
@@ -436,7 +458,10 @@ pub fn note_navigation(browser: *mut _cef_browser_t, url: String) {
     let ptr = browser as usize;
     let mut guard = state().lock().unwrap();
     if let Some(tab) = guard.tabs.iter_mut().find(|t| t.browser == ptr) {
-        tab.url = url;
+        tab.url = url.clone();
+        if let Some(extracted) = extract_title_from_url(&url) {
+            tab.title = extracted;
+        }
     }
 }
 
@@ -1215,7 +1240,7 @@ impl JorenDevToolsObserver {
         base.base.release = Some(Self::release);
         base.base.has_one_ref = Some(Self::has_one_ref);
         base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
-        base.on_dev_tools_message = None;
+        base.on_dev_tools_message = Some(Self::on_dev_tools_message);
         base.on_dev_tools_method_result = Some(Self::on_method_result);
         base.on_dev_tools_event = None;
         base.on_dev_tools_agent_attached = None;
@@ -1253,6 +1278,31 @@ impl JorenDevToolsObserver {
     unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
         let this = (base as *mut Self).as_ref().unwrap();
         if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_dev_tools_message(
+        _self: *mut _cef_dev_tools_message_observer_t,
+        _browser: *mut _cef_browser_t,
+        message: *const c_void,
+        message_size: usize,
+    ) -> c_int {
+        if message.is_null() || message_size == 0 {
+            return 0;
+        }
+        let slice = std::slice::from_raw_parts(message as *const u8, message_size);
+        if let Ok(val) = serde_json::from_slice::<serde_json::Value>(slice) {
+            if let Some(id) = val.get("id").and_then(|v| v.as_i64()) {
+                let id = id as i32;
+                if let Some(err) = val.get("error") {
+                    notify_devtools_result(id, false, Some(err.clone()));
+                    return 1;
+                } else if let Some(res) = val.get("result") {
+                    notify_devtools_result(id, true, Some(res.clone()));
+                    return 1;
+                }
+            }
+        }
+        0
     }
 
     unsafe extern "C" fn on_method_result(
@@ -1512,10 +1562,19 @@ fn capture_tab_hwnd(hwnd: isize) -> Result<(Vec<u8>, u32, u32), String> {
 
 pub fn observe_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
-    let (url, title) = {
+    let (url, initial_title) = {
         let guard = state().lock().unwrap();
         if let Some(tab) = guard.tabs.iter().find(|t| t.id == id) {
-            (tab.url.clone(), if tab.title.is_empty() { "New Tab".to_string() } else { tab.title.clone() })
+            let t = if !tab.title.is_empty() && tab.title != "New Tab" {
+                tab.title.clone()
+            } else if let Some(extracted) = extract_title_from_url(&tab.url) {
+                extracted
+            } else if tab.title.is_empty() {
+                "New Tab".to_string()
+            } else {
+                tab.title.clone()
+            };
+            (tab.url.clone(), t)
         } else {
             return Err(format!("Unknown tab '{id}'"));
         }
@@ -1650,17 +1709,25 @@ pub fn observe_tab(args: &serde_json::Value) -> Result<serde_json::Value, String
         }
     }
 
+    let effective_title = if initial_title != "New Tab" && !initial_title.is_empty() {
+        initial_title
+    } else if let Some(extracted) = extract_title_from_url(&url) {
+        extracted
+    } else {
+        initial_title
+    };
+
     Ok(serde_json::json!({
         "tab_id": id,
         "url": url,
-        "title": title,
-        "visible_text": format!("{title}\n{url}"),
+        "title": effective_title,
+        "visible_text": format!("{effective_title}\n{url}"),
         "interactive_elements": [],
         "headings": [
-            { "level": 1, "text": title }
+            { "level": 1, "text": effective_title }
         ],
         "links": [
-            { "text": title, "href": url, "visible": true, "is_external": false }
+            { "text": effective_title, "href": url, "visible": true, "is_external": false }
         ],
         "forms": [],
         "timestamp": now_ms()
@@ -1676,7 +1743,9 @@ pub fn click_element(args: &serde_json::Value) -> Result<serde_json::Value, Stri
     let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
         r#"(function(){{
-            var t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}');
+            var t = null;
+            try {{ t = document.querySelector('{escaped}'); }} catch(e) {{}}
+            if (!t) {{ t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}'); }}
             if (!t) return {{ found: false }};
             t.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
             t.focus();
@@ -1715,7 +1784,9 @@ pub fn type_element(args: &serde_json::Value) -> Result<serde_json::Value, Strin
     let clear_snippet = if clear_first { "t.value='';" } else { "" };
     let script = format!(
         r#"(function(){{
-            var t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}');
+            var t = null;
+            try {{ t = document.querySelector('{escaped_id}'); }} catch(e) {{}}
+            if (!t) {{ t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}'); }}
             if (!t) return {{ found: false }};
             t.focus();
             {clear_snippet}
@@ -1754,7 +1825,9 @@ pub fn select_option(args: &serde_json::Value) -> Result<serde_json::Value, Stri
     let escaped_value = value.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
         r#"(function(){{
-            var t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}');
+            var t = null;
+            try {{ t = document.querySelector('{escaped_id}'); }} catch(e) {{}}
+            if (!t) {{ t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}'); }}
             if (!t) return {{ found: false }};
             t.value = '{escaped_value}';
             t.dispatchEvent(new Event('change', {{ bubbles: true }}));
@@ -1788,7 +1861,9 @@ pub fn focus_element(args: &serde_json::Value) -> Result<serde_json::Value, Stri
     let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
         r#"(function(){{
-            var t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}');
+            var t = null;
+            try {{ t = document.querySelector('{escaped}'); }} catch(e) {{}}
+            if (!t) {{ t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}'); }}
             if (!t) return {{ found: false }};
             t.focus();
             return {{ found: true }};
@@ -1857,12 +1932,34 @@ pub fn wait_for_condition(args: &serde_json::Value) -> Result<serde_json::Value,
     let escaped_target = target.replace('\\', "\\\\").replace('\'', "\\'");
 
     let check_script = match condition {
+        "element_text" => {
+            let sel = args.get("selector").or_else(|| args.get("target")).and_then(|v| v.as_str()).unwrap_or("");
+            let exp = args.get("expected_text").or_else(|| args.get("expected")).and_then(|v| v.as_str()).unwrap_or("");
+            let esc_sel = sel.replace('\\', "\\\\").replace('\'', "\\'");
+            let esc_exp = exp.replace('\\', "\\\\").replace('\'', "\\'");
+            format!(
+                r#"(function() {{
+                    var el = null;
+                    try {{ el = document.querySelector('{esc_sel}'); }} catch(e) {{}}
+                    if (!el) {{ el = document.querySelector('[data-joren-eid="{esc_sel}"]') || document.getElementById('{esc_sel}'); }}
+                    if (!el) return false;
+                    return (el.innerText || el.value || '').includes('{esc_exp}');
+                }})()"#
+            )
+        },
         "element_exists" => format!(
-            "!!(document.querySelector('[data-joren-eid=\"{escaped_target}\"]') || document.getElementById('{escaped_target}'))"
+            r#"(function() {{
+                var el = null;
+                try {{ el = document.querySelector('{escaped_target}'); }} catch(e) {{}}
+                if (!el) {{ el = document.querySelector('[data-joren-eid="{escaped_target}"]') || document.getElementById('{escaped_target}'); }}
+                return !!el;
+            }})()"#
         ),
         "element_visible" => format!(
             r#"(function() {{
-                var el = document.querySelector('[data-joren-eid="{escaped_target}"]') || document.getElementById('{escaped_target}');
+                var el = null;
+                try {{ el = document.querySelector('{escaped_target}'); }} catch(e) {{}}
+                if (!el) {{ el = document.querySelector('[data-joren-eid="{escaped_target}"]') || document.getElementById('{escaped_target}'); }}
                 if (!el) return false;
                 var r = el.getBoundingClientRect();
                 return r.width > 0 && r.height > 0;
