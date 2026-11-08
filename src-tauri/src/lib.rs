@@ -7,6 +7,7 @@ pub mod ai;
 pub mod browser;
 pub mod browser_agent;
 pub mod browser_control;
+pub mod browser_engine;
 pub mod browser_download;
 pub mod browser_orchestrator;
 pub mod browser_privacy;

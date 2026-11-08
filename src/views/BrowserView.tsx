@@ -310,14 +310,20 @@ export const BrowserView: React.FC = () => {
 
     // Initial tab creation if none exist
     const initTabs = async () => {
-      const current = browserController.getState();
-      if (current.tabs.length === 0) {
-        let b;
-        if (viewportRef.current) {
-          const rect = viewportRef.current.getBoundingClientRect();
-          b = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+      try {
+        const current = await browserController.refreshMultiState();
+        if (current.tabs.length === 0) {
+          let b: BrowserViewportBounds | undefined;
+          if (viewportRef.current) {
+            const rect = viewportRef.current.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              b = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+            }
+          }
+          await browserController.createTab('tab_1', 'joren://newtab', b);
         }
-        await browserController.createTab('tab_1', 'joren://newtab', b);
+      } catch (err) {
+        console.error('Failed to initialize browser tabs:', err);
       }
     };
     initTabs();
@@ -357,11 +363,23 @@ export const BrowserView: React.FC = () => {
     if (!raw || !raw.trim()) return;
 
     const activeId = browserState.active_tab_id;
-    if (!activeId) return;
+    let b: BrowserViewportBounds | undefined;
+    if (viewportRef.current) {
+      const rect = viewportRef.current.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        b = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+      }
+    }
 
     setIsLoading(true);
     try {
-      await browserController.navigateTab(activeId, raw.trim());
+      if (!activeId || browserState.tabs.length === 0) {
+        // Fallback: create tab if none exists
+        const newId = `tab_${Date.now()}`;
+        await browserController.createTab(newId, raw.trim(), b);
+      } else {
+        await browserController.navigateTab(activeId, raw.trim());
+      }
       fetchHistory();
     } catch (err) {
       console.error('Navigation error:', err);
@@ -369,15 +387,17 @@ export const BrowserView: React.FC = () => {
       setIsLoading(false);
       omniboxInputRef.current?.blur();
     }
-  }, [inputUrl, browserState.active_tab_id, fetchHistory]);
+  }, [inputUrl, browserState.active_tab_id, browserState.tabs.length, fetchHistory]);
 
   const handleCreateNewTab = useCallback(async (url = 'joren://newtab') => {
     try {
       const newId = `tab_${Date.now()}`;
-      let b;
+      let b: BrowserViewportBounds | undefined;
       if (viewportRef.current) {
         const rect = viewportRef.current.getBoundingClientRect();
-        b = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+        if (rect.width > 0 && rect.height > 0) {
+          b = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+        }
       }
       await browserController.createTab(newId, url, b);
       browserController.saveSession();

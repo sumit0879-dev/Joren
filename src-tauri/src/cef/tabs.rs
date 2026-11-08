@@ -24,6 +24,36 @@ pub struct TabGroupRec {
     pub tab_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalRoute {
+    NewTab,
+    History,
+    Bookmarks,
+    Downloads,
+    Settings,
+}
+
+pub fn match_allowed_internal_route(url: &str) -> Option<InternalRoute> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let norm = if let Some(stripped) = trimmed.strip_prefix("edith://") {
+        format!("joren://{}", stripped)
+    } else {
+        trimmed.to_string()
+    };
+    match norm.as_str() {
+        "joren://newtab" | "about:blank" => Some(InternalRoute::NewTab),
+        "joren://history" => Some(InternalRoute::History),
+        "joren://bookmarks" => Some(InternalRoute::Bookmarks),
+        "joren://downloads" => Some(InternalRoute::Downloads),
+        "joren://settings" => Some(InternalRoute::Settings),
+        _ => None,
+    }
+}
+
+pub fn is_allowed_internal_url(url: &str) -> bool {
+    match_allowed_internal_route(url).is_some()
+}
+
 struct TabRec {
     id: String,
     url: String,
@@ -36,6 +66,8 @@ struct TabRec {
     is_pinned: bool,
     group_id: Option<String>,
     zoom_level: f64,
+    is_internal: bool,
+    is_pending_creation: bool,
 }
 
 struct TabState {
@@ -145,7 +177,7 @@ fn tab_json(tab: &TabRec, active: bool, visible: bool) -> serde_json::Value {
         "url": tab.url,
         "title": if tab.title.is_empty() { "New Tab" } else { tab.title.as_str() },
         "is_active": active,
-        "is_loading": false,
+        "is_loading": tab.is_pending_creation,
         "can_go_back": false,
         "can_go_forward": false,
         "created_at": tab.created_at,
@@ -154,6 +186,7 @@ fn tab_json(tab: &TabRec, active: bool, visible: bool) -> serde_json::Value {
         "group_id": tab.group_id,
         "zoom_level": tab.zoom_level,
         "is_visible": visible,
+        "is_internal": tab.is_internal,
     })
 }
 
@@ -166,6 +199,26 @@ fn bounds_from(value: Option<&serde_json::Value>) -> cef_rect_t {
         rect.height = v.get("height").and_then(|n| n.as_f64()).unwrap_or(0.0) as i32;
     }
     rect
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn get_window_dpi(hwnd: isize) -> u32 {
+    if hwnd == 0 {
+        return 96;
+    }
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+    if !user32.is_null() {
+        let proc = GetProcAddress(user32, b"GetDpiForWindow\0".as_ptr());
+        if let Some(proc) = proc {
+            let func: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(proc);
+            let dpi = func(hwnd as *mut c_void);
+            if dpi > 0 {
+                return dpi;
+            }
+        }
+    }
+    96
 }
 
 #[cfg(target_os = "windows")]
@@ -185,13 +238,26 @@ fn place_hwnd(hwnd: isize, bounds: cef_rect_t, show: bool) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             SetWindowPos, ShowWindow, HWND_TOP, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
         };
+        let host = host_hwnd();
+        let scale = if host != 0 {
+            let dpi = get_window_dpi(host);
+            dpi as f64 / 96.0
+        } else {
+            1.0
+        };
+
+        let phys_x = (bounds.x as f64 * scale).round() as i32;
+        let phys_y = (bounds.y as f64 * scale).round() as i32;
+        let phys_w = (bounds.width as f64 * scale).round() as i32;
+        let phys_h = (bounds.height as f64 * scale).round() as i32;
+
         SetWindowPos(
             hwnd as *mut _,
             HWND_TOP,
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            bounds.height,
+            phys_x,
+            phys_y,
+            phys_w,
+            phys_h,
             SWP_NOACTIVATE,
         );
         ShowWindow(hwnd as *mut _, if show { SW_SHOWNOACTIVATE } else { SW_HIDE });
@@ -323,14 +389,15 @@ pub unsafe fn claim_created_browser(browser: *mut _cef_browser_t, hwnd: isize) -
     if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
         tab.browser = browser as usize;
         tab.hwnd = hwnd;
+        tab.is_pending_creation = false;
         if !url.is_empty() {
             tab.url = url;
         }
         let bounds = tab.bounds;
-        let show = guard.visible && guard.active_id.as_deref() == Some(id.as_str());
+        let show = !tab.is_internal && guard.visible && guard.active_id.as_deref() == Some(id.as_str());
         drop(guard);
         place_hwnd(hwnd, bounds, show);
-        log_startup("TAB", &format!("CEF tab '{id}' created hwnd={hwnd:#x}"));
+        log_startup("TAB", &format!("CEF tab '{id}' created hwnd={hwnd:#x} show={show}"));
     } else {
         drop(guard);
         release_browser(browser as usize);
@@ -381,21 +448,33 @@ fn create_tab_on_ui(id: String, url: String, bounds: cef_rect_t, profile_id: Str
     let api = get_cef_api().ok_or_else(|| "CEF API is not loaded".to_string())?;
     {
         let mut guard = state().lock().unwrap();
-        guard.pending.push_back(id.clone());
-        guard.tabs.push(TabRec {
-            id: id.clone(),
-            url: url.clone(),
-            title: String::new(),
-            browser: 0,
-            hwnd: 0,
-            created_at: now_ms(),
-            profile_id,
-            bounds,
-            is_pinned: false,
-            group_id: None,
-            zoom_level: 1.0,
-        });
+        if !guard.pending.contains(&id) {
+            guard.pending.push_back(id.clone());
+        }
+        if let Some(existing) = guard.tabs.iter_mut().find(|t| t.id == id) {
+            existing.url = url.clone();
+            existing.bounds = bounds;
+            existing.is_internal = false;
+            existing.is_pending_creation = true;
+        } else {
+            guard.tabs.push(TabRec {
+                id: id.clone(),
+                url: url.clone(),
+                title: String::new(),
+                browser: 0,
+                hwnd: 0,
+                created_at: now_ms(),
+                profile_id,
+                bounds,
+                is_pinned: false,
+                group_id: None,
+                zoom_level: 1.0,
+                is_internal: false,
+                is_pending_creation: true,
+            });
+        }
         guard.active_id = Some(id.clone());
+        guard.visible = true;
     }
 
     unsafe {
@@ -423,7 +502,9 @@ fn create_tab_on_ui(id: String, url: String, bounds: cef_rect_t, profile_id: Str
         if created == 0 {
             let mut guard = state().lock().unwrap();
             guard.pending.retain(|p| p != &id);
-            guard.tabs.retain(|t| t.id != id);
+            if let Some(t) = guard.tabs.iter_mut().find(|t| t.id == id) {
+                t.is_pending_creation = false;
+            }
             return Err("cef_browser_host_create_browser rejected the tab".to_string());
         }
     }
@@ -445,11 +526,9 @@ pub fn create_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
         .get("url")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("https://example.com")
+        .unwrap_or("joren://newtab")
         .to_string();
-    if url.starts_with("joren://") || url.starts_with("javascript:") {
-        return Err("Website tabs cannot load the trusted app origin or javascript URLs".to_string());
-    }
+
     let bounds = bounds_from(args.get("bounds"));
     let profile = args
         .get("profileId")
@@ -457,6 +536,56 @@ pub fn create_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
         .and_then(|v| v.as_str())
         .unwrap_or("profile_default")
         .to_string();
+
+    // Check allowlisted internal route
+    if let Some(route) = match_allowed_internal_route(&url) {
+        let canonical_url = match route {
+            InternalRoute::NewTab => "joren://newtab",
+            InternalRoute::History => "joren://history",
+            InternalRoute::Bookmarks => "joren://bookmarks",
+            InternalRoute::Downloads => "joren://downloads",
+            InternalRoute::Settings => "joren://settings",
+        };
+        let mut guard = state().lock().unwrap();
+        if guard.tabs.iter().any(|t| t.id == id) {
+            return Err(format!("Tab '{}' already exists", id));
+        }
+        let tab = TabRec {
+            id: id.clone(),
+            url: canonical_url.to_string(),
+            title: match route {
+                InternalRoute::NewTab => "New Tab".to_string(),
+                InternalRoute::History => "History".to_string(),
+                InternalRoute::Bookmarks => "Bookmarks".to_string(),
+                InternalRoute::Downloads => "Downloads".to_string(),
+                InternalRoute::Settings => "Settings".to_string(),
+            },
+            browser: 0,
+            hwnd: 0,
+            created_at: now_ms(),
+            profile_id: profile,
+            bounds,
+            is_pinned: false,
+            group_id: None,
+            zoom_level: 1.0,
+            is_internal: true,
+            is_pending_creation: false,
+        };
+        guard.tabs.push(tab);
+        guard.active_id = Some(id.clone());
+        let tab_ref = guard.tabs.iter().find(|t| t.id == id).unwrap();
+        log_startup("TAB", &format!("Created virtual internal tab '{id}' route={canonical_url}"));
+        return Ok(tab_json(tab_ref, true, false));
+    }
+
+    // Security check against privileged or unlisted internal routes
+    if url.starts_with("joren://") || url.starts_with("edith://") {
+        return Err("Access to privileged or unlisted internal route is forbidden".to_string());
+    }
+    if url.starts_with("javascript:") {
+        return Err("Javascript URLs are forbidden".to_string());
+    }
+
     let id2 = id.clone();
     run_on_ui(move || create_tab_on_ui(id2, url, bounds, profile))?
 }
@@ -471,23 +600,78 @@ pub fn navigate_tab(args: &serde_json::Value) -> Result<serde_json::Value, Strin
     if url.is_empty() {
         return Err("browser navigation requires a url".to_string());
     }
-    if url.starts_with("joren://") || url.starts_with("javascript:") {
-        return Err("Refusing to navigate a website tab to the trusted app origin".to_string());
+    if url.starts_with("javascript:") {
+        return Err("Javascript URLs are forbidden".to_string());
     }
-    run_on_ui(move || {
-        let ptr = {
+
+    // Check allowlisted internal route
+    if let Some(route) = match_allowed_internal_route(&url) {
+        let canonical_url = match route {
+            InternalRoute::NewTab => "joren://newtab",
+            InternalRoute::History => "joren://history",
+            InternalRoute::Bookmarks => "joren://bookmarks",
+            InternalRoute::Downloads => "joren://downloads",
+            InternalRoute::Settings => "joren://settings",
+        };
+        return run_on_ui(move || {
             let mut guard = state().lock().unwrap();
             let missing = format!("Unknown tab '{id}'");
-            let tab = guard
-                .tabs
-                .iter_mut()
-                .find(|t| t.id == id)
-                .ok_or(missing)?;
-            tab.url = url.clone();
-            tab.browser
+            let tab = guard.tabs.iter_mut().find(|t| t.id == id).ok_or(missing)?;
+            tab.url = canonical_url.to_string();
+            tab.is_internal = true;
+            tab.title = match route {
+                InternalRoute::NewTab => "New Tab".to_string(),
+                InternalRoute::History => "History".to_string(),
+                InternalRoute::Bookmarks => "Bookmarks".to_string(),
+                InternalRoute::Downloads => "Downloads".to_string(),
+                InternalRoute::Settings => "Settings".to_string(),
+            };
+            let hwnd = tab.hwnd;
+            let bounds = tab.bounds;
+            drop(guard);
+            if hwnd != 0 {
+                place_hwnd(hwnd, bounds, false);
+            }
+            log_startup("TAB", &format!("Navigated tab '{id}' to internal route {canonical_url} (native HWND hidden)"));
+            Ok(serde_json::Value::String(canonical_url.to_string()))
+        })?;
+    }
+
+    // Reject privileged or unlisted internal schemes
+    if url.starts_with("joren://") || url.starts_with("edith://") {
+        return Err("Refusing to navigate website tab to privileged or unlisted internal route".to_string());
+    }
+
+    // External URL navigation
+    let id_clone = id.clone();
+    let url_clone = url.clone();
+    run_on_ui(move || {
+        let (browser_ptr, hwnd, bounds, profile_id, needs_promotion) = {
+            let mut guard = state().lock().unwrap();
+            let missing = format!("Unknown tab '{id_clone}'");
+            let tab = guard.tabs.iter_mut().find(|t| t.id == id_clone).ok_or(missing)?;
+            tab.url = url_clone.clone();
+            tab.is_internal = false;
+            let needs_promotion = tab.browser == 0 && !tab.is_pending_creation;
+            (tab.browser, tab.hwnd, tab.bounds, tab.profile_id.clone(), needs_promotion)
         };
-        unsafe { load_url(ptr as *mut _cef_browser_t, &url); }
-        Ok(serde_json::Value::String(url))
+
+        if needs_promotion {
+            log_startup("TAB", &format!("Promoting virtual tab '{id_clone}' to native CEF browser with url={url_clone}"));
+            create_tab_on_ui(id_clone, url_clone.clone(), bounds, profile_id)?;
+            return Ok(serde_json::Value::String(url_clone));
+        }
+
+        if browser_ptr != 0 {
+            unsafe { load_url(browser_ptr as *mut _cef_browser_t, &url_clone); }
+            let guard = state().lock().unwrap();
+            let show = guard.visible && guard.active_id.as_deref() == Some(&id_clone);
+            drop(guard);
+            if hwnd != 0 {
+                place_hwnd(hwnd, bounds, show);
+            }
+        }
+        Ok(serde_json::Value::String(url_clone))
     })?
 }
 
@@ -562,7 +746,7 @@ pub fn show_active(args: &serde_json::Value) -> Result<serde_json::Value, String
             if is_active && bounds.width > 0 {
                 tab.bounds = bounds;
             }
-            if is_active {
+            if is_active && !tab.is_internal {
                 shown = Some((tab.hwnd, tab.bounds));
             } else {
                 let hwnd = tab.hwnd;
@@ -588,7 +772,8 @@ pub fn set_bounds(args: &serde_json::Value) -> Result<serde_json::Value, String>
             if active.as_deref() == Some(tab.id.as_str()) {
                 tab.bounds = bounds;
                 let hwnd = tab.hwnd;
-                place_hwnd(hwnd, bounds, visible);
+                let should_show = visible && !tab.is_internal;
+                place_hwnd(hwnd, bounds, should_show);
             }
         }
         Ok(serde_json::json!({ "success": true }))
@@ -608,21 +793,22 @@ pub fn switch_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
         }
         guard.active_id = Some(id.clone());
         guard.visible = true;
-        let snapshot: Vec<(String, isize, cef_rect_t)> = guard
+        let snapshot: Vec<(String, isize, cef_rect_t, bool)> = guard
             .tabs
             .iter_mut()
             .map(|t| {
                 if t.id == id && bounds.width > 0 {
                     t.bounds = bounds;
                 }
-                (t.id.clone(), t.hwnd, t.bounds)
+                (t.id.clone(), t.hwnd, t.bounds, t.is_internal)
             })
             .collect();
         let active_tab = guard.tabs.iter().find(|t| t.id == id).unwrap();
         let json = tab_json(active_tab, true, true);
         drop(guard);
-        for (tid, hwnd, rect) in snapshot {
-            place_hwnd(hwnd, rect, tid == id);
+        for (tid, hwnd, rect, is_internal) in snapshot {
+            let should_show = tid == id && !is_internal;
+            place_hwnd(hwnd, rect, should_show);
         }
         Ok(json)
     })?
@@ -637,8 +823,20 @@ pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> 
         };
         if ptr == 0 {
             let mut guard = state().lock().unwrap();
-            guard.tabs.retain(|t| t.id != id);
-            return Ok(serde_json::Value::Null);
+            if let Some(pos) = guard.tabs.iter().position(|t| t.id == id) {
+                let tab = guard.tabs.remove(pos);
+                guard.closed_history.push_front((tab.id.clone(), tab.url.clone()));
+                if guard.closed_history.len() > 30 {
+                    guard.closed_history.pop_back();
+                }
+                if guard.active_id.as_deref() == Some(&id) {
+                    guard.active_id = guard.tabs.last().map(|t| t.id.clone());
+                }
+            }
+            let next_active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
+            let json = next_active.map(|t| tab_json(t, true, guard.visible)).unwrap_or(serde_json::Value::Null);
+            log_startup("TAB", &format!("Virtual tab '{id}' closed"));
+            return Ok(json);
         }
         unsafe {
             let browser = ptr as *mut _cef_browser_t;
@@ -654,7 +852,10 @@ pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> 
                 }
             }
         }
-        Ok(serde_json::Value::Null)
+        let guard = state().lock().unwrap();
+        let next_active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
+        let json = next_active.map(|t| tab_json(t, true, guard.visible)).unwrap_or(serde_json::Value::Null);
+        Ok(json)
     })?
 }
 

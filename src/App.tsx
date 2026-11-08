@@ -24,10 +24,12 @@ const MainLayout: React.FC = () => {
     console.log('[JOREN] React application mounted and ready (__JOREN_APP_READY__ = true)');
   }, []);
 
-  // Browser WebView Visibility Lifecycle: Ensure native child webviews are hidden when navigating away
+  // Browser WebView Visibility Lifecycle: Ensure native child webviews are hidden when navigating away, and restored when navigating back
   React.useEffect(() => {
     if (activeTab !== 'browser') {
       browserController.hide().catch(() => {});
+    } else {
+      browserController.show().catch(() => {});
     }
   }, [activeTab]);
 
