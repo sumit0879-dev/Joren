@@ -1158,7 +1158,7 @@ pub fn send_devtools_cmd(
             Some(p) if p != 0 => p,
             _ => {
                 notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": format!("Tab '{}' browser not ready", tid) })));
-                return Ok(());
+                return Ok::<(), String>(());
             }
         };
 
@@ -1166,7 +1166,7 @@ pub fn send_devtools_cmd(
             let browser = ptr as *mut _cef_browser_t;
             if browser.is_null() {
                 notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "Browser is null" })));
-                return Ok(());
+                return Ok::<(), String>(());
             }
             let b = &*browser;
             let host = if let Some(get_host) = b.get_host {
@@ -1176,7 +1176,7 @@ pub fn send_devtools_cmd(
             };
             if host.is_null() {
                 notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "Browser host is null" })));
-                return Ok(());
+                return Ok::<(), String>(());
             }
 
             ensure_devtools_observer_on_host(host);
@@ -1192,7 +1192,7 @@ pub fn send_devtools_cmd(
                 notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "send_dev_tools_message not available" })));
             }
         }
-        Ok(())
+        Ok::<(), String>(())
     });
 
     if let Err(e) = res_sub {
@@ -1240,7 +1240,7 @@ fn capture_tab_hwnd(hwnd: isize) -> Result<(Vec<u8>, u32, u32), String> {
         CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, ReleaseDC,
         SelectObject, BitBlt, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, PrintWindow, PW_RENDERFULLCONTENT};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
 
     if hwnd == 0 {
         return Err("Tab HWND is 0".to_string());
@@ -1260,10 +1260,7 @@ fn capture_tab_hwnd(hwnd: isize) -> Result<(Vec<u8>, u32, u32), String> {
         let hbmp = CreateCompatibleBitmap(hdc_window, width as i32, height as i32);
         let old_bmp = SelectObject(hdc_mem, hbmp);
 
-        let pw_res = PrintWindow(hwnd_ptr, hdc_mem, PW_RENDERFULLCONTENT);
-        if pw_res == 0 {
-            BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_window, 0, 0, SRCCOPY);
-        }
+        BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_window, 0, 0, SRCCOPY);
 
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
