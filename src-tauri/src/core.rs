@@ -718,8 +718,7 @@ impl JorenCore {
 
             "search_memory_cmd" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
-                let res = tokio_rt.block_on(crate::memory::search_memory_cmd(app.clone(), query, limit))?;
+                let res = tokio_rt.block_on(crate::memory::search_memory_cmd(app.clone(), query))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -763,8 +762,32 @@ impl JorenCore {
                     .get("sessionId")
                     .or_else(|| args.get("session_id"))
                     .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
+                let history: Vec<crate::chat::ChatHistoryItem> = args
+                    .get("history")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                let app_settings = args
+                    .get("appSettings")
+                    .or_else(|| args.get("app_settings"))
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let turn_id = args
+                    .get("turnId")
+                    .or_else(|| args.get("turn_id"))
+                    .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let res = tokio_rt.block_on(crate::chat::chat_command(app.clone(), message, session_id))?;
+                let res = tokio_rt.block_on(crate::chat::chat_command(
+                    app.clone(),
+                    message,
+                    session_id,
+                    history,
+                    app_settings,
+                    app.state(),
+                    turn_id,
+                ))?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -1015,9 +1038,8 @@ impl JorenCore {
 
             "browser_request_ai_control" => {
                 let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let task_id = args.get("taskId").or_else(|| args.get("task_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let reason = args.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = crate::browser_control::browser_request_ai_control(app.clone(), tab_id, task_id, reason)?;
+                let task_id = args.get("taskId").or_else(|| args.get("task_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_control::browser_request_ai_control(app.clone(), tab_id, task_id)?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -1058,22 +1080,9 @@ impl JorenCore {
             }
 
             "browser_assess_action_risk" => {
-                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let action_type = args.get("actionType").or_else(|| args.get("action_type")).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let target_url = args.get("targetUrl").or_else(|| args.get("target_url")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                let selector = args.get("selector").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let text_payload = args.get("textPayload").or_else(|| args.get("text_payload")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                let is_form_submission = args.get("isFormSubmission").or_else(|| args.get("is_form_submission")).and_then(|v| v.as_bool());
-                let domain = args.get("domain").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = crate::browser_risk::browser_assess_action_risk(
-                    tab_id,
-                    action_type,
-                    target_url,
-                    selector,
-                    text_payload,
-                    is_form_submission,
-                    domain,
-                )?;
+                let context: crate::browser_risk::BrowserActionContext = serde_json::from_value(args.clone())
+                    .map_err(|e| format!("Invalid BrowserActionContext payload: {}", e))?;
+                let res = crate::browser_risk::browser_assess_action_risk(context)?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -1085,8 +1094,7 @@ impl JorenCore {
             "browser_resolve_action_approval" => {
                 let approval_id = args.get("approvalId").or_else(|| args.get("approval_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let decision = args.get("decision").and_then(|v| v.as_str()).unwrap_or("DENIED").to_string();
-                let operator_reason = args.get("operatorReason").or_else(|| args.get("operator_reason")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = crate::browser_risk::browser_resolve_action_approval(approval_id, decision, operator_reason)?;
+                let res = crate::browser_risk::browser_resolve_action_approval(approval_id, decision)?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 

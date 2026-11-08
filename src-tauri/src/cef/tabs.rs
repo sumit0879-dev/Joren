@@ -753,9 +753,11 @@ pub fn reopen_last_closed_tab(args: &serde_json::Value) -> Result<serde_json::Va
 pub fn toggle_pin_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     let mut guard = state().lock().unwrap();
+    let is_active = guard.active_id.as_deref() == Some(id.as_str());
+    let visible = guard.visible;
     if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
         tab.is_pinned = !tab.is_pinned;
-        Ok(tab_json(tab, guard.active_id.as_deref() == Some(tab.id.as_str()), guard.visible))
+        Ok(tab_json(tab, is_active, visible))
     } else {
         Err(format!("Unknown tab '{id}'"))
     }
@@ -1164,29 +1166,15 @@ pub fn wait_for_condition(args: &serde_json::Value) -> Result<serde_json::Value,
 
 pub fn screenshot_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args).unwrap_or_else(|_| "active".to_string());
-    let bounds = {
-        let guard = state().lock().unwrap();
-        guard.bounds.clone()
-    };
     let screens = screenshots::Screen::all().map_err(|e| format!("Failed to get screens: {}", e))?;
     let primary = screens
         .into_iter()
         .next()
         .ok_or_else(|| "No primary display found.".to_string())?;
 
-    let img = if let Some(b) = bounds {
-        let x = b.x.max(0.0) as i32;
-        let y = b.y.max(0.0) as i32;
-        let width = b.width.max(10.0) as u32;
-        let height = b.height.max(10.0) as u32;
-        primary
-            .capture_area(x, y, width, height)
-            .map_err(|e| format!("Failed to capture area: {}", e))?
-    } else {
-        primary
-            .capture()
-            .map_err(|e| format!("Failed to capture full screen: {}", e))?
-    };
+    let img = primary
+        .capture()
+        .map_err(|e| format!("Failed to capture full screen: {}", e))?;
 
     let w = img.width();
     let h = img.height();
@@ -1286,7 +1274,7 @@ pub fn open_link_tab(args: &serde_json::Value) -> Result<serde_json::Value, Stri
     let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("https://example.com");
     let bounds = bounds_from(args.get("bounds"));
     let new_id = format!("tab_{}", now_ms());
-    run_on_ui(move || create_tab_on_ui(new_id, url.to_string(), bounds, "profile_default".to_string()))
+    run_on_ui(move || create_tab_on_ui(new_id, url.to_string(), bounds, "profile_default".to_string()))?
 }
 
 pub fn reader_extract(args: &serde_json::Value) -> Result<serde_json::Value, String> {
