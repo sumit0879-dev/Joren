@@ -18,6 +18,13 @@ pub struct _cef_version_info_t {
 }
 pub type cef_version_info_t = _cef_version_info_t;
 
+/// Chromium result code for normal process exit / singleton handoff
+pub const RESULT_CODE_NORMAL_EXIT: i32 = 0;
+
+/// Chromium result code when an elevated process auto-de-elevates and relaunches unelevated
+/// Reference: chrome/common/chrome_result_codes.h -> RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED = 38
+pub const RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED: i32 = 38;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,6 +42,13 @@ mod tests {
         assert_eq!(std::mem::size_of::<_cef_app_t>(), 80);
         assert_eq!(std::mem::size_of::<_cef_browser_process_handler_t>(), 96);
         assert_eq!(std::mem::size_of::<_cef_scheme_registrar_t>(), 24);
+        assert_eq!(std::mem::size_of::<_cef_dev_tools_message_observer_t>(), 80);
         assert_eq!(CEF_API_VERSION_LAST, 15600);
+    }
+
+    #[test]
+    fn test_chromium_exit_codes() {
+        assert_eq!(RESULT_CODE_NORMAL_EXIT, 0);
+        assert_eq!(RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED, 38);
     }
 }

@@ -39,6 +39,49 @@ pub fn log_startup(stage: &str, details: &str) {
 }
 
 #[cfg(target_os = "windows")]
+pub fn is_process_elevated() -> Option<bool> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+        let mut elevation: TOKEN_ELEVATION = std::mem::zeroed();
+        let mut ret_len: u32 = 0;
+        let success = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut _ as *mut c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        );
+        CloseHandle(token);
+        if success != 0 {
+            Some(elevation.TokenIsElevated != 0)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_process_elevated() -> Option<bool> {
+    None
+}
+
+pub fn get_process_role() -> String {
+    for arg in std::env::args() {
+        if let Some(rest) = arg.strip_prefix("--type=") {
+            return rest.to_string();
+        }
+    }
+    "browser".to_string()
+}
+
+#[cfg(target_os = "windows")]
 pub fn show_fatal_error_dialog(title: &str, message: &str) {
     eprintln!("[FATAL_ERROR_DIALOG] [{}] {}", title, message);
     if std::env::var("CI").is_ok() || std::env::args().any(|a| a == "--smoke-test") {
@@ -295,11 +338,15 @@ impl JorenLifeSpanHandler {
 
     unsafe extern "C" fn on_before_close(
         _self: *mut _cef_life_span_handler_t,
-        _browser: *mut _cef_browser_t,
+        browser: *mut _cef_browser_t,
     ) {
-        tabs::note_closed(_browser);
-        log_startup("BROWSER", "Browser window is closing.");
-        clear_main_browser();
+        let is_tab = tabs::note_closed(browser);
+        if !is_tab {
+            log_startup("BROWSER", "Main application browser window is closing.");
+            clear_main_browser();
+        } else {
+            log_startup("BROWSER", "Website tab browser closed.");
+        }
     }
 }
 
@@ -421,22 +468,35 @@ impl JorenLoadHandler {
                                                 });
                                                 console.log("[SMOKE_TEST] policy_list_pending_approvals status:", polRes.status);
 
-                                                // Test native CEF browser tab lifecycle & DOM observation
+                                                // Test native CEF browser tab lifecycle, DOM observation & screenshot
                                                 const tabRes = await fetch('/api/invoke', {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({ cmd: 'browser_create_tab', args: { url: 'about:blank' } })
+                                                    body: JSON.stringify({
+                                                        cmd: 'browser_create_tab',
+                                                        args: { url: 'data:text/html,<html><head><title>SmokeTestPage</title></head><body><h1>SmokeHeading</h1><button id=\"smoke-btn\">ClickMe</button><input id=\"smoke-input\" type=\"text\" value=\"init\"/><a href=\"https://example.com\">SmokeLink</a></body></html>' }
+                                                    })
                                                 });
                                                 const tabData = await tabRes.json();
                                                 console.log("[SMOKE_TEST] browser_create_tab response:", JSON.stringify(tabData));
                                                 const testTabId = tabData.id || (tabData.tab && tabData.tab.id) || 'tab-smoke';
+
+                                                await new Promise((r) => setTimeout(r, 600));
 
                                                 const obsRes = await fetch('/api/invoke', {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
                                                     body: JSON.stringify({ cmd: 'browser_observe_tab', args: { tabId: testTabId } })
                                                 });
-                                                console.log("[SMOKE_TEST] browser_observe_tab status:", obsRes.status);
+                                                const obsData = await obsRes.json();
+                                                console.log("[SMOKE_TEST] browser_observe_tab status:", obsRes.status, "title:", obsData.title, "interactive_elements:", obsData.interactive_elements ? obsData.interactive_elements.length : 0);
+
+                                                const shotRes = await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'browser_screenshot_tab', args: { tabId: testTabId } })
+                                                });
+                                                console.log("[SMOKE_TEST] browser_screenshot_tab status:", shotRes.status);
 
                                                 await fetch('/api/invoke', {
                                                     method: 'POST',
@@ -622,7 +682,16 @@ unsafe fn run_cef_main(
     sandbox_info: *mut c_void,
     version_info: *const c_void,
 ) -> i32 {
-    log_startup("BOOTSTRAP", "RunWinMain entered from bootstrap.exe launcher.");
+    let role = get_process_role();
+    let elevated_str = match is_process_elevated() {
+        Some(true) => "elevated=true",
+        Some(false) => "elevated=false",
+        None => "elevated=unknown",
+    };
+    log_startup(
+        "BOOTSTRAP",
+        &format!("RunWinMain entered: role={}, {}", role, elevated_str),
+    );
 
     // -------------------------------------------------------------
     // MANDATORY SECURITY GATE: Fail-Closed if sandbox_info is NULL
@@ -726,7 +795,17 @@ unsafe fn run_cef_main(
         } else {
             0
         };
-        log_startup("INIT", &format!("cef_initialize returned 0 (early exit / singleton check). Process exit code: {}", exit_code));
+        log_startup("INIT", &format!("cef_initialize returned 0. Process exit code: {}", exit_code));
+
+        if exit_code == RESULT_CODE_NORMAL_EXIT {
+            log_startup("INIT", "Normal singleton early exit (code 0). Terminating second process cleanly.");
+            return RESULT_CODE_NORMAL_EXIT;
+        }
+
+        if exit_code == RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED {
+            log_startup("INIT", "Chromium auto-de-elevation handoff (code 38). Elevated parent process exiting cleanly while unelevated child continues.");
+            return RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED;
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -739,11 +818,6 @@ unsafe fn run_cef_main(
                 SetForegroundWindow(existing_hwnd);
                 return 0;
             }
-        }
-
-        if exit_code == 0 {
-            log_startup("INIT", "Normal singleton early exit (code 0). Terminating second process cleanly.");
-            return 0;
         }
 
         let msg = format!("CEF initialization (cef_initialize) failed with exit code {}.\n\nLogs: {}\nCEF: 156.0.15", exit_code, cef_log_path.display());

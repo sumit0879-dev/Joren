@@ -32,8 +32,7 @@ RequestExecutionLevel admin
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_RUN "$INSTDIR\joren.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Launch Joren"
+!define MUI_FINISHPAGE_TEXT "Joren has been successfully installed on your system.$\r$\n$\r$\nPlease launch Joren from the Start Menu or Desktop shortcut."
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM

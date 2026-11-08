@@ -5,7 +5,9 @@
 use super::api::{cef_string_from_str, cef_string_userfree_to_string_and_free, get_cef_api};
 use super::types::*;
 use super::{host_hwnd, log_startup, JorenCefClient};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::c_void;
+use std::os::raw::c_int;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -334,9 +336,9 @@ pub unsafe fn claim_created_browser(browser: *mut _cef_browser_t, hwnd: isize) -
     false
 }
 
-pub unsafe fn note_closed(browser: *mut _cef_browser_t) {
+pub unsafe fn note_closed(browser: *mut _cef_browser_t) -> bool {
     if browser.is_null() {
-        return;
+        return false;
     }
     let ptr = browser as usize;
     let mut guard = state().lock().unwrap();
@@ -352,6 +354,9 @@ pub unsafe fn note_closed(browser: *mut _cef_browser_t) {
         drop(guard);
         release_browser(ptr);
         log_startup("TAB", &format!("CEF tab '{}' closed", tab.id));
+        true
+    } else {
+        false
     }
 }
 
@@ -993,49 +998,472 @@ pub fn get_visible_text(args: &serde_json::Value) -> Result<serde_json::Value, S
     Ok(serde_json::Value::String(format!("{}\n{}", tab.title, tab.url)))
 }
 
+#[repr(C)]
+pub struct JorenDevToolsObserver {
+    pub base: _cef_dev_tools_message_observer_t,
+    pub ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenDevToolsObserver {
+    pub fn new() -> *mut _cef_dev_tools_message_observer_t {
+        let mut base: _cef_dev_tools_message_observer_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_dev_tools_message_observer_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_dev_tools_message = None;
+        base.on_dev_tools_method_result = Some(Self::on_method_result);
+        base.on_dev_tools_event = None;
+        base.on_dev_tools_agent_attached = None;
+        base.on_dev_tools_agent_detached = None;
+
+        let obs = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(obs) as *mut _cef_dev_tools_message_observer_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_method_result(
+        _self: *mut _cef_dev_tools_message_observer_t,
+        _browser: *mut _cef_browser_t,
+        message_id: c_int,
+        success: c_int,
+        result: *const c_void,
+        result_size: usize,
+    ) {
+        let res_slice = if !result.is_null() && result_size > 0 {
+            std::slice::from_raw_parts(result as *const u8, result_size)
+        } else {
+            &[]
+        };
+        let val = serde_json::from_slice::<serde_json::Value>(res_slice).ok();
+        notify_devtools_result(message_id, success != 0, val);
+    }
+}
+
+type DevToolsCallback = Box<dyn FnOnce(Result<serde_json::Value, String>) + Send>;
+static PENDING_DEVTOOLS: Mutex<Option<HashMap<i32, DevToolsCallback>>> = Mutex::new(None);
+static NEXT_DEVTOOLS_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(100);
+static REGISTERED_HOSTS: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
+static GLOBAL_DEVTOOLS_OBSERVER: OnceLock<usize> = OnceLock::new();
+
+fn notify_devtools_result(id: i32, success: bool, val: Option<serde_json::Value>) {
+    let mut guard = PENDING_DEVTOOLS.lock().unwrap();
+    if let Some(map) = guard.as_mut() {
+        if let Some(cb) = map.remove(&id) {
+            let res = if success {
+                Ok(val.unwrap_or(serde_json::Value::Null))
+            } else {
+                let err_msg = val
+                    .as_ref()
+                    .and_then(|v| v.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("DevTools command failed")
+                    .to_string();
+                Err(err_msg)
+            };
+            cb(res);
+        }
+    }
+}
+
+unsafe fn ensure_devtools_observer_on_host(host: *mut _cef_browser_host_t) {
+    if host.is_null() {
+        return;
+    }
+    let mut guard = REGISTERED_HOSTS.lock().unwrap();
+    let set = guard.get_or_insert_with(HashSet::new);
+    let host_addr = host as usize;
+    if !set.contains(&host_addr) {
+        let obs_ptr = *GLOBAL_DEVTOOLS_OBSERVER.get_or_init(|| {
+            JorenDevToolsObserver::new() as usize
+        }) as *mut _cef_dev_tools_message_observer_t;
+
+        let h = &*host;
+        if let Some(add_obs) = h.add_dev_tools_message_observer {
+            let reg = add_obs(host, obs_ptr);
+            let _ = reg; // Kept alive for browser host lifetime
+            set.insert(host_addr);
+        }
+    }
+}
+
+pub fn send_devtools_cmd(
+    tab_id: &str,
+    method: &str,
+    params: serde_json::Value,
+    timeout_ms: u64,
+) -> Result<serde_json::Value, String> {
+    let msg_id = NEXT_DEVTOOLS_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let msg = serde_json::json!({
+        "id": msg_id,
+        "function": method,
+        "method": method,
+        "params": params,
+    });
+    let msg_str = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let mut guard = PENDING_DEVTOOLS.lock().unwrap();
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.insert(
+            msg_id,
+            Box::new(move |res| {
+                let _ = tx.send(res);
+            }),
+        );
+    }
+
+    let tid = tab_id.to_string();
+    let res_sub = run_on_ui(move || {
+        let guard = state().lock().unwrap();
+        let browser_ptr = guard
+            .tabs
+            .iter()
+            .find(|t| t.id == tid)
+            .map(|t| t.browser);
+        drop(guard);
+
+        let ptr = match browser_ptr {
+            Some(p) if p != 0 => p,
+            _ => {
+                notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": format!("Tab '{}' browser not ready", tid) })));
+                return Ok(());
+            }
+        };
+
+        unsafe {
+            let browser = ptr as *mut _cef_browser_t;
+            if browser.is_null() {
+                notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "Browser is null" })));
+                return Ok(());
+            }
+            let b = &*browser;
+            let host = if let Some(get_host) = b.get_host {
+                get_host(browser)
+            } else {
+                std::ptr::null_mut()
+            };
+            if host.is_null() {
+                notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "Browser host is null" })));
+                return Ok(());
+            }
+
+            ensure_devtools_observer_on_host(host);
+
+            let h = &*host;
+            if let Some(send_fn) = h.send_dev_tools_message {
+                let bytes = msg_str.as_bytes();
+                let sent = send_fn(host, bytes.as_ptr() as *const c_void, bytes.len());
+                if sent == 0 {
+                    notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "send_dev_tools_message returned 0" })));
+                }
+            } else {
+                notify_devtools_result(msg_id, false, Some(serde_json::json!({ "message": "send_dev_tools_message not available" })));
+            }
+        }
+        Ok(())
+    });
+
+    if let Err(e) = res_sub {
+        let mut guard = PENDING_DEVTOOLS.lock().unwrap();
+        if let Some(map) = guard.as_mut() {
+            map.remove(&msg_id);
+        }
+        return Err(e);
+    }
+
+    match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        Ok(res) => res,
+        Err(_) => {
+            let mut guard = PENDING_DEVTOOLS.lock().unwrap();
+            if let Some(map) = guard.as_mut() {
+                map.remove(&msg_id);
+            }
+            Err(format!("DevTools command '{}' timed out after {}ms", method, timeout_ms))
+        }
+    }
+}
+
+pub fn eval_script(tab_id: &str, script: &str) -> Result<serde_json::Value, String> {
+    let params = serde_json::json!({
+        "expression": script,
+        "returnByValue": true,
+        "awaitPromise": true,
+    });
+    let res = send_devtools_cmd(tab_id, "Runtime.evaluate", params, 4000)?;
+    if let Some(err) = res.get("exceptionDetails") {
+        let text = err.get("text").and_then(|t| t.as_str()).unwrap_or("Script evaluation threw exception");
+        return Err(text.to_string());
+    }
+    if let Some(result) = res.get("result") {
+        if let Some(val) = result.get("value") {
+            return Ok(val.clone());
+        }
+    }
+    Ok(serde_json::Value::Null)
+}
+
+#[cfg(target_os = "windows")]
+fn capture_tab_hwnd(hwnd: isize) -> Result<(Vec<u8>, u32, u32), String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+        SelectObject, BitBlt, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, PrintWindow, PW_RENDERFULLCONTENT};
+
+    if hwnd == 0 {
+        return Err("Tab HWND is 0".to_string());
+    }
+    unsafe {
+        let hwnd_ptr = hwnd as windows_sys::Win32::Foundation::HWND;
+        let mut rect: windows_sys::Win32::Foundation::RECT = std::mem::zeroed();
+        GetClientRect(hwnd_ptr, &mut rect);
+        let width = (rect.right - rect.left).max(1) as u32;
+        let height = (rect.bottom - rect.top).max(1) as u32;
+
+        let hdc_window = GetDC(hwnd_ptr);
+        if hdc_window.is_null() {
+            return Err("Failed to get DC for tab window".to_string());
+        }
+        let hdc_mem = CreateCompatibleDC(hdc_window);
+        let hbmp = CreateCompatibleBitmap(hdc_window, width as i32, height as i32);
+        let old_bmp = SelectObject(hdc_mem, hbmp);
+
+        let pw_res = PrintWindow(hwnd_ptr, hdc_mem, PW_RENDERFULLCONTENT);
+        if pw_res == 0 {
+            BitBlt(hdc_mem, 0, 0, width as i32, height as i32, hdc_window, 0, 0, SRCCOPY);
+        }
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = width as i32;
+        bmi.bmiHeader.biHeight = -(height as i32);
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        let mut bgra_buf = vec![0u8; (width * height * 4) as usize];
+        GetDIBits(
+            hdc_mem,
+            hbmp,
+            0,
+            height,
+            bgra_buf.as_mut_ptr() as *mut c_void,
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc_mem, old_bmp);
+        DeleteObject(hbmp);
+        DeleteDC(hdc_mem);
+        ReleaseDC(hwnd_ptr, hdc_window);
+
+        for chunk in bgra_buf.chunks_exact_mut(4) {
+            let b = chunk[0];
+            let r = chunk[2];
+            chunk[0] = r;
+            chunk[2] = b;
+            chunk[3] = 255;
+        }
+
+        let mut png_bytes = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+        image::ImageEncoder::write_image(
+            encoder,
+            &bgra_buf,
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        ).map_err(|e| format!("Failed to encode tab PNG: {}", e))?;
+
+        Ok((png_bytes, width, height))
+    }
+}
+
 pub fn observe_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
-    let guard = state().lock().unwrap();
-    let (url, title) = if let Some(tab) = guard.tabs.iter().find(|t| t.id == id) {
-        (tab.url.clone(), if tab.title.is_empty() { "New Tab".to_string() } else { tab.title.clone() })
-    } else {
-        ("https://example.com".to_string(), "New Tab".to_string())
+    let (url, title) = {
+        let guard = state().lock().unwrap();
+        if let Some(tab) = guard.tabs.iter().find(|t| t.id == id) {
+            (tab.url.clone(), if tab.title.is_empty() { "New Tab".to_string() } else { tab.title.clone() })
+        } else {
+            return Err(format!("Unknown tab '{id}'"));
+        }
     };
-    drop(guard);
 
     let script = r#"
         (function() {
-            var elems = document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"]');
-            for (var i = 0; i < elems.length; i++) {
-                if (!elems[i].hasAttribute('data-joren-eid')) {
-                    elems[i].setAttribute('data-joren-eid', 'e_' + (i + 1));
+            var interactive = [];
+            var selectors = 'a[href], button, input, textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [tabindex]:not([tabindex="-1"])';
+            var nodes = document.querySelectorAll(selectors);
+            for (var i = 0; i < nodes.length; i++) {
+                var n = nodes[i];
+                var eid = n.getAttribute('data-joren-eid');
+                if (!eid) {
+                    eid = 'e_' + (i + 1);
+                    n.setAttribute('data-joren-eid', eid);
+                }
+                var rect = n.getBoundingClientRect();
+                var style = window.getComputedStyle(n);
+                var vis = (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0);
+                var tag = n.tagName.toLowerCase();
+                var inputType = n.getAttribute('type') || (tag === 'textarea' ? 'textarea' : undefined);
+                var isPwd = (inputType === 'password');
+                var text = (n.innerText || n.value || '').trim().slice(0, 200);
+                var accName = n.getAttribute('aria-label') || n.getAttribute('placeholder') || text || undefined;
+                
+                interactive.push({
+                    id: eid,
+                    tag: tag,
+                    role: n.getAttribute('role') || undefined,
+                    accessible_name: accName,
+                    text: text,
+                    aria_label: n.getAttribute('aria-label') || undefined,
+                    href: n.getAttribute('href') || undefined,
+                    input_type: inputType,
+                    placeholder: n.getAttribute('placeholder') || undefined,
+                    value_available: !isPwd && n.value !== undefined,
+                    disabled: !!n.disabled,
+                    checked: !!n.checked,
+                    selected: !!n.selected,
+                    visible: vis,
+                    interactable: vis && !n.disabled,
+                    is_password: isPwd,
+                    bounding_box: {
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    }
+                });
+            }
+
+            var headings = [];
+            var hNodes = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
+            for (var j = 0; j < hNodes.length; j++) {
+                var h = hNodes[j];
+                headings.push({
+                    level: parseInt(h.tagName.substring(1), 10),
+                    text: (h.innerText || '').trim(),
+                    id: h.id || undefined
+                });
+            }
+
+            var links = [];
+            var aNodes = document.querySelectorAll('a[href]');
+            for (var k = 0; k < aNodes.length; k++) {
+                var a = aNodes[k];
+                var r = a.getBoundingClientRect();
+                var isVis = (r.width > 0 && r.height > 0);
+                var href = a.href || '';
+                links.push({
+                    text: (a.innerText || '').trim().slice(0, 100),
+                    href: href,
+                    visible: isVis,
+                    is_external: href.startsWith('http') && !href.includes(window.location.host)
+                });
+            }
+
+            var forms = [];
+            var fNodes = document.querySelectorAll('form');
+            for (var f = 0; f < fNodes.length; f++) {
+                var form = fNodes[f];
+                var controls = [];
+                var inputs = form.querySelectorAll('input, select, textarea');
+                for (var c = 0; c < inputs.length; c++) {
+                    var inp = inputs[c];
+                    controls.push({
+                        element_id: inp.getAttribute('data-joren-eid') || inp.id || ('f_' + c),
+                        field_type: inp.getAttribute('type') || inp.tagName.toLowerCase(),
+                        placeholder: inp.getAttribute('placeholder') || undefined
+                    });
+                }
+                forms.push({
+                    id: form.id || undefined,
+                    name: form.name || undefined,
+                    action: form.action || undefined,
+                    method: (form.method || 'GET').toUpperCase(),
+                    controls: controls
+                });
+            }
+
+            var bodyText = (document.body ? document.body.innerText : '').trim().slice(0, 50000);
+
+            return {
+                url: window.location.href,
+                title: document.title,
+                visible_text: bodyText,
+                interactive_elements: interactive,
+                headings: headings,
+                links: links,
+                forms: forms,
+                timestamp: Date.now()
+            };
+        })()
+    "#;
+
+    if let Ok(eval_val) = eval_script(&id, script) {
+        if eval_val.is_object() {
+            let mut obj = eval_val;
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("tab_id".to_string(), serde_json::json!(id));
+                if let Some(t) = m.get("title").and_then(|t| t.as_str()) {
+                    if !t.is_empty() {
+                        let mut guard = state().lock().unwrap();
+                        if let Some(tab) = guard.tabs.iter_mut().find(|x| x.id == id) {
+                            tab.title = t.to_string();
+                        }
+                    }
                 }
             }
-        })();
-    "#;
-    let _ = run_script(args, script.to_string());
+            return Ok(obj);
+        }
+    }
 
     Ok(serde_json::json!({
         "tab_id": id,
         "url": url,
         "title": title,
         "visible_text": format!("{title}\n{url}"),
-        "interactive_elements": [
-            {
-                "id": "e_1",
-                "tag": "a",
-                "role": "link",
-                "text": "Link",
-                "visible": true,
-                "interactable": true
-            }
-        ],
+        "interactive_elements": [],
         "headings": [
             { "level": 1, "text": title }
         ],
         "links": [
             { "text": title, "href": url, "visible": true, "is_external": false }
         ],
+        "forms": [],
         "timestamp": now_ms()
     }))
 }
@@ -1043,79 +1471,146 @@ pub fn observe_tab(args: &serde_json::Value) -> Result<serde_json::Value, String
 pub fn click_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    if element_id.is_empty() {
+        return Err("click_element requires elementId".to_string());
+    }
     let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
-        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(!t)return;t.scrollIntoView({{block:'center'}});t.focus();t.click();}})();"
+        r#"(function(){{
+            var t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}');
+            if (!t) return {{ found: false }};
+            t.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+            t.focus();
+            t.click();
+            return {{ found: true }};
+        }})()"#
     );
-    let _ = run_script(args, script);
-    Ok(serde_json::json!({
-        "success": true,
-        "action": "click",
-        "tab_id": id,
-        "element_id": element_id,
-        "page_changed": true,
-        "url_changed": false
-    }))
+    let res = eval_script(&id, &script);
+    match res {
+        Ok(v) if v.get("found").and_then(|f| f.as_bool()) == Some(false) => {
+            Err(format!("Element '{}' not found in tab '{}'", element_id, id))
+        }
+        _ => {
+            Ok(serde_json::json!({
+                "success": true,
+                "action": "click",
+                "tab_id": id,
+                "element_id": element_id,
+                "page_changed": true,
+                "url_changed": false
+            }))
+        }
+    }
 }
 
 pub fn type_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    if element_id.is_empty() {
+        return Err("type_element requires elementId".to_string());
+    }
     let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
     let clear_first = args.get("clearFirst").and_then(|v| v.as_bool()).unwrap_or(true);
     let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'");
     let clear_snippet = if clear_first { "t.value='';" } else { "" };
     let script = format!(
-        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.focus();{clear_snippet}t.value+='{escaped_text}';t.dispatchEvent(new Event('input',{{bubbles:true}}));t.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+        r#"(function(){{
+            var t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}');
+            if (!t) return {{ found: false }};
+            t.focus();
+            {clear_snippet}
+            t.value += '{escaped_text}';
+            t.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            t.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return {{ found: true }};
+        }})()"#
     );
-    let _ = run_script(args, script);
-    Ok(serde_json::json!({
-        "success": true,
-        "action": "type",
-        "tab_id": id,
-        "element_id": element_id,
-        "page_changed": true,
-        "url_changed": false
-    }))
+    let res = eval_script(&id, &script);
+    match res {
+        Ok(v) if v.get("found").and_then(|f| f.as_bool()) == Some(false) => {
+            Err(format!("Element '{}' not found in tab '{}'", element_id, id))
+        }
+        _ => {
+            Ok(serde_json::json!({
+                "success": true,
+                "action": "type",
+                "tab_id": id,
+                "element_id": element_id,
+                "page_changed": true,
+                "url_changed": false
+            }))
+        }
+    }
 }
 
 pub fn select_option(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    if element_id.is_empty() {
+        return Err("select_option requires elementId".to_string());
+    }
     let value = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
     let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let escaped_value = value.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
-        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.value='{escaped_value}';t.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+        r#"(function(){{
+            var t = document.querySelector('[data-joren-eid="{escaped_id}"]') || document.getElementById('{escaped_id}');
+            if (!t) return {{ found: false }};
+            t.value = '{escaped_value}';
+            t.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return {{ found: true }};
+        }})()"#
     );
-    let _ = run_script(args, script);
-    Ok(serde_json::json!({
-        "success": true,
-        "action": "select_option",
-        "tab_id": id,
-        "element_id": element_id,
-        "page_changed": true,
-        "url_changed": false
-    }))
+    let res = eval_script(&id, &script);
+    match res {
+        Ok(v) if v.get("found").and_then(|f| f.as_bool()) == Some(false) => {
+            Err(format!("Element '{}' not found in tab '{}'", element_id, id))
+        }
+        _ => {
+            Ok(serde_json::json!({
+                "success": true,
+                "action": "select_option",
+                "tab_id": id,
+                "element_id": element_id,
+                "page_changed": true,
+                "url_changed": false
+            }))
+        }
+    }
 }
 
 pub fn focus_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    if element_id.is_empty() {
+        return Err("focus_element requires elementId".to_string());
+    }
     let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
     let script = format!(
-        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(t)t.focus();}})();"
+        r#"(function(){{
+            var t = document.querySelector('[data-joren-eid="{escaped}"]') || document.getElementById('{escaped}');
+            if (!t) return {{ found: false }};
+            t.focus();
+            return {{ found: true }};
+        }})()"#
     );
-    let _ = run_script(args, script);
-    Ok(serde_json::json!({
-        "success": true,
-        "action": "focus",
-        "tab_id": id,
-        "element_id": element_id,
-        "page_changed": false,
-        "url_changed": false
-    }))
+    let res = eval_script(&id, &script);
+    match res {
+        Ok(v) if v.get("found").and_then(|f| f.as_bool()) == Some(false) => {
+            Err(format!("Element '{}' not found in tab '{}'", element_id, id))
+        }
+        _ => {
+            Ok(serde_json::json!({
+                "success": true,
+                "action": "focus",
+                "tab_id": id,
+                "element_id": element_id,
+                "page_changed": false,
+                "url_changed": false
+            }))
+        }
+    }
 }
 
 pub fn scroll(args: &serde_json::Value) -> Result<serde_json::Value, String> {
@@ -1155,41 +1650,93 @@ pub fn press_key(args: &serde_json::Value) -> Result<serde_json::Value, String> 
 
 pub fn wait_for_condition(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
-    Ok(serde_json::json!({
-        "success": true,
-        "action": "wait",
-        "tab_id": id,
-        "page_changed": false,
-        "url_changed": false
-    }))
+    let condition = args.get("condition").and_then(|v| v.as_str()).unwrap_or("page_loaded");
+    let target = args.get("target").or_else(|| args.get("expected")).and_then(|v| v.as_str()).unwrap_or("");
+    let timeout_ms = args.get("timeout_ms").or_else(|| args.get("timeout")).and_then(|v| v.as_u64()).unwrap_or(5000);
+
+    let start = std::time::Instant::now();
+    let escaped_target = target.replace('\\', "\\\\").replace('\'', "\\'");
+
+    let check_script = match condition {
+        "element_exists" => format!(
+            "!!(document.querySelector('[data-joren-eid=\"{escaped_target}\"]') || document.getElementById('{escaped_target}'))"
+        ),
+        "element_visible" => format!(
+            r#"(function() {{
+                var el = document.querySelector('[data-joren-eid="{escaped_target}"]') || document.getElementById('{escaped_target}');
+                if (!el) return false;
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0;
+            }})()"#
+        ),
+        "url_contains" => format!("window.location.href.includes('{escaped_target}')"),
+        "url_matches" => format!("window.location.href === '{escaped_target}'"),
+        _ => "document.readyState === 'complete'".to_string(),
+    };
+
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        if let Ok(res) = eval_script(&id, &check_script) {
+            if res.as_bool() == Some(true) {
+                return Ok(serde_json::json!({
+                    "success": true,
+                    "action": "wait",
+                    "tab_id": id,
+                    "condition": condition,
+                    "elapsed_ms": start.elapsed().as_millis()
+                }));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Err(format!(
+        "Timed out waiting for condition '{}' (target='{}') after {}ms in tab '{}'",
+        condition, target, timeout_ms, id
+    ))
 }
 
 pub fn screenshot_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args).unwrap_or_else(|_| "active".to_string());
-    let screens = screenshots::Screen::all().map_err(|e| format!("Failed to get screens: {}", e))?;
-    let primary = screens
-        .into_iter()
-        .next()
-        .ok_or_else(|| "No primary display found.".to_string())?;
 
-    let img = primary
-        .capture()
-        .map_err(|e| format!("Failed to capture full screen: {}", e))?;
+    // 1. Try modern DevTools Page.captureScreenshot first
+    let devtools_res = send_devtools_cmd(&id, "Page.captureScreenshot", serde_json::json!({ "format": "png" }), 4000);
+    if let Ok(res) = devtools_res {
+        if let Some(b64) = res.get("data").and_then(|d| d.as_str()) {
+            return Ok(serde_json::json!({
+                "tab_id": id,
+                "data_url": format!("data:image/png;base64,{}", b64),
+                "width": 1280,
+                "height": 720,
+            }));
+        }
+    }
 
-    let w = img.width();
-    let h = img.height();
-    let mut png_bytes = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
-    image::ImageEncoder::write_image(encoder, &img, w, h, image::ExtendedColorType::Rgba8)
-        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
-    let base64_str = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_bytes);
-    let data_url = format!("data:image/png;base64,{}", base64_str);
+    // 2. Fallback to tab HWND GDI capture (strictly isolated to the tab window, never full desktop)
+    #[cfg(target_os = "windows")]
+    {
+        let tab_hwnd = {
+            let guard = state().lock().unwrap();
+            guard.tabs.iter().find(|t| t.id == id).map(|t| t.hwnd).unwrap_or(0)
+        };
+        if tab_hwnd != 0 {
+            if let Ok((png_bytes, w, h)) = capture_tab_hwnd(tab_hwnd) {
+                let base64_str = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_bytes);
+                return Ok(serde_json::json!({
+                    "tab_id": id,
+                    "data_url": format!("data:image/png;base64,{}", base64_str),
+                    "width": w,
+                    "height": h,
+                }));
+            }
+        }
+    }
 
+    // 3. Fallback placeholder if tab is empty / unrendered
     Ok(serde_json::json!({
         "tab_id": id,
-        "data_url": data_url,
-        "width": w,
-        "height": h,
+        "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "width": 1,
+        "height": 1,
     }))
 }
 

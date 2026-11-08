@@ -335,13 +335,20 @@ impl JorenSchemeHandlerFactory {
             }
 
             // Parse JSON { cmd, args }
+            let mut cmd_name = "unknown".to_string();
+            let mut tab_id = None;
             let mut response_body = serde_json::json!({ "error": "Invalid JSON request payload" });
             let mut status = 400;
 
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&post_bytes) {
                 if let Some(cmd) = val.get("cmd").and_then(|c| c.as_str()) {
+                    cmd_name = cmd.to_string();
                     let default_args = serde_json::json!({});
                     let args = val.get("args").unwrap_or(&default_args);
+
+                    if let Some(t) = args.get("tabId").or_else(|| args.get("tab_id")).or_else(|| args.get("id")).and_then(|v| v.as_str()) {
+                        tab_id = Some(t.to_string());
+                    }
 
                     let guard = DISPATCHER.lock().unwrap();
                     if let Some(dispatcher) = guard.as_ref() {
@@ -363,7 +370,15 @@ impl JorenSchemeHandlerFactory {
                     response_body = serde_json::json!({ "error": "Missing 'cmd' parameter in request" });
                 }
             } else {
-                crate::cef::log_startup("IPC_ERR", &format!("Failed to parse JSON from {} post bytes: {}", post_bytes.len(), String::from_utf8_lossy(&post_bytes)));
+                crate::cef::log_startup("IPC_ERR", &format!("Failed to parse JSON (payload size: {} bytes)", post_bytes.len()));
+            }
+
+            let tab_info = tab_id.map(|t| format!(" tab='{}'", t)).unwrap_or_default();
+            if status == 200 {
+                crate::cef::log_startup("IPC", &format!("cmd='{}'{} status=200 OK", cmd_name, tab_info));
+            } else {
+                let err_msg = response_body.get("error").and_then(|e| e.as_str()).unwrap_or("unknown error");
+                crate::cef::log_startup("IPC_FAIL", &format!("cmd='{}'{} status={} error='{}'", cmd_name, tab_info, status, err_msg));
             }
 
             let resp_bytes = serde_json::to_vec(&response_body).unwrap_or_default();

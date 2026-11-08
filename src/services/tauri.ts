@@ -84,8 +84,14 @@ export async function invoke<T = any>(
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(errText || `Command '${cmd}' failed with status ${res.status}`);
+        let errDetail = '';
+        try {
+          const errJson = await res.json();
+          errDetail = errJson.error || JSON.stringify(errJson);
+        } catch {
+          errDetail = await res.text();
+        }
+        throw new Error(`Command '${cmd}' failed (${res.status}): ${errDetail || res.statusText}`);
       }
 
       return (await res.json()) as T;
