@@ -2688,7 +2688,7 @@ async fn execute_browser_tool_internal(
                     )
                 });
 
-            match engine.create_tab(Some(&tab_id), initial_url) {
+            match engine.create_tab(Some(&tab_id), initial_url.as_deref()) {
                 Ok(tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
