@@ -1271,10 +1271,14 @@ pub fn save_page_html(args: &serde_json::Value) -> Result<serde_json::Value, Str
 }
 
 pub fn open_link_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("https://example.com");
+    let url = args
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://example.com")
+        .to_string();
     let bounds = bounds_from(args.get("bounds"));
     let new_id = format!("tab_{}", now_ms());
-    run_on_ui(move || create_tab_on_ui(new_id, url.to_string(), bounds, "profile_default".to_string()))?
+    run_on_ui(move || create_tab_on_ui(new_id, url, bounds, "profile_default".to_string()))?
 }
 
 pub fn reader_extract(args: &serde_json::Value) -> Result<serde_json::Value, String> {
