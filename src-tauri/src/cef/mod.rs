@@ -413,6 +413,38 @@ impl JorenLoadHandler {
                                                 if (e.detail && e.detail.event === 'smoke-test-event') eventSeen = true;
                                             });
                                             try {
+                                                // Test policy command resolution
+                                                const polRes = await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'policy_list_pending_approvals', args: {} })
+                                                });
+                                                console.log("[SMOKE_TEST] policy_list_pending_approvals status:", polRes.status);
+
+                                                // Test native CEF browser tab lifecycle & DOM observation
+                                                const tabRes = await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'browser_create_tab', args: { url: 'about:blank' } })
+                                                });
+                                                const tabData = await tabRes.json();
+                                                console.log("[SMOKE_TEST] browser_create_tab response:", JSON.stringify(tabData));
+                                                const testTabId = tabData.id || (tabData.tab && tabData.tab.id) || 'tab-smoke';
+
+                                                const obsRes = await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'browser_observe_tab', args: { tabId: testTabId } })
+                                                });
+                                                console.log("[SMOKE_TEST] browser_observe_tab status:", obsRes.status);
+
+                                                await fetch('/api/invoke', {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ cmd: 'browser_close_tab', args: { tabId: testTabId } })
+                                                });
+                                                console.log("[SMOKE_TEST] browser_close_tab complete");
+
                                                 const res = await fetch('/api/invoke', {
                                                     method: 'POST',
                                                     headers: { 'Content-Type': 'application/json' },
@@ -430,7 +462,7 @@ impl JorenLoadHandler {
                                                     body: JSON.stringify({ cmd: 'smoke_test_ack', args: { react_ready: true, event_received: eventSeen } })
                                                 });
                                             } catch (e) {
-                                                console.error("[SMOKE_TEST] IPC pingback failed:", e);
+                                                console.error("[SMOKE_TEST] IPC probe failed:", e);
                                             }
                                         } else if (attempts >= maxAttempts) {
                                             clearInterval(check);
@@ -646,6 +678,21 @@ unsafe fn run_cef_main(
     // -------------------------------------------------------------
     // Main Browser Process Initialization
     // -------------------------------------------------------------
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+        let class_name = windows_sys::core::w!("JorenMainWindow");
+        let existing_hwnd = unsafe { FindWindowW(class_name, windows_sys::core::w!("Joren")) };
+        if !existing_hwnd.is_null() {
+            log_startup("SINGLE_INSTANCE", &format!("Existing Joren window found (hwnd={:?}). Activating window and exiting new process cleanly.", existing_hwnd));
+            unsafe {
+                ShowWindow(existing_hwnd, SW_RESTORE);
+                SetForegroundWindow(existing_hwnd);
+            }
+            return 0;
+        }
+    }
+
     let mut settings: cef_settings_t = std::mem::zeroed();
     settings.size = std::mem::size_of::<cef_settings_t>();
     settings.no_sandbox = 0; // 0 = Sandbox ENABLED (Mandatory)
@@ -674,10 +721,35 @@ unsafe fn run_cef_main(
     );
 
     if init_res == 0 {
-        let msg = "CEF initialization (cef_initialize) failed.";
-        log_startup("INIT_ERROR", msg);
-        show_fatal_error_dialog("Joren Runtime Error", msg);
-        return 1;
+        let exit_code = if let Some(get_code) = api.get_exit_code {
+            get_code()
+        } else {
+            0
+        };
+        log_startup("INIT", &format!("cef_initialize returned 0 (early exit / singleton check). Process exit code: {}", exit_code));
+
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow, ShowWindow, SW_RESTORE};
+            let class_name = windows_sys::core::w!("JorenMainWindow");
+            let existing_hwnd = FindWindowW(class_name, windows_sys::core::w!("Joren"));
+            if !existing_hwnd.is_null() {
+                log_startup("INIT", &format!("Found active Joren window {:?}; bringing to foreground.", existing_hwnd));
+                ShowWindow(existing_hwnd, SW_RESTORE);
+                SetForegroundWindow(existing_hwnd);
+                return 0;
+            }
+        }
+
+        if exit_code == 0 {
+            log_startup("INIT", "Normal singleton early exit (code 0). Terminating second process cleanly.");
+            return 0;
+        }
+
+        let msg = format!("CEF initialization (cef_initialize) failed with exit code {}.\n\nLogs: {}\nCEF: 156.0.15", exit_code, cef_log_path.display());
+        log_startup("INIT_ERROR", &msg);
+        show_fatal_error_dialog("Joren Runtime Error", &msg);
+        return exit_code;
     }
     log_startup("INIT", "cef_initialize succeeded.");
 

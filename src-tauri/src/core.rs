@@ -566,6 +566,622 @@ impl JorenCore {
                 Ok(serde_json::to_value(res).unwrap())
             }
 
+            "policy_evaluate_action" => {
+                let request: crate::policy::ActionRequest = serde_json::from_value(
+                    args.get("request").cloned().unwrap_or(serde_json::json!({})),
+                )
+                .map_err(|e| format!("Invalid request payload: {}", e))?;
+                let context: crate::policy::PolicyContext = serde_json::from_value(
+                    args.get("context").cloned().unwrap_or(serde_json::json!({})),
+                )
+                .map_err(|e| format!("Invalid context payload: {}", e))?;
+                let res = tokio_rt.block_on(crate::policy_evaluate_action(
+                    request,
+                    context,
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "policy_list_pending_approvals" => {
+                let res = tokio_rt.block_on(crate::policy_list_pending_approvals(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "policy_resolve_approval" => {
+                let approval_id = args
+                    .get("approvalId")
+                    .or_else(|| args.get("approval_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let decision: crate::policy::OperatorDecision = serde_json::from_value(
+                    args.get("decision").cloned().unwrap_or(serde_json::json!("DENIED")),
+                )
+                .map_err(|e| format!("Invalid decision payload: {}", e))?;
+                let res = tokio_rt.block_on(crate::policy_resolve_approval(
+                    approval_id,
+                    decision,
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "policy_get_audit_log" => {
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let res = tokio_rt.block_on(crate::policy_get_audit_log(limit, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "tools_list_definitions" => {
+                let res = crate::tools_list_definitions(app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "tools_get_definition" => {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::tools_get_definition(name, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "tools_execute" => {
+                let request: crate::tools::ToolRequest = serde_json::from_value(
+                    args.get("request").cloned().unwrap_or_else(|| args.clone()),
+                )
+                .map_err(|e| format!("Invalid ToolRequest payload: {}", e))?;
+                let res = tokio_rt.block_on(crate::tools_execute(request, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "tools_cancel_execution" => {
+                let execution_id = args
+                    .get("executionId")
+                    .or_else(|| args.get("execution_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let res = tokio_rt.block_on(crate::tools_cancel_execution(execution_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "voice_session_start" => {
+                let conversation_id = args
+                    .get("conversationId")
+                    .or_else(|| args.get("conversation_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
+                let res = tokio_rt.block_on(crate::voice_session_start(conversation_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "voice_session_submit_transcript" => {
+                let session_id = args
+                    .get("sessionId")
+                    .or_else(|| args.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let transcript = args.get("transcript").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let confidence = args.get("confidence").and_then(|v| v.as_f64()).map(|f| f as f32);
+                let language = args.get("language").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let provider_id = args
+                    .get("providerId")
+                    .or_else(|| args.get("provider_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let model_id = args
+                    .get("modelId")
+                    .or_else(|| args.get("model_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let app_settings = args.get("appSettings").or_else(|| args.get("app_settings")).cloned();
+                let res = tokio_rt.block_on(crate::voice_session_submit_transcript(
+                    session_id,
+                    transcript,
+                    confidence,
+                    language,
+                    provider_id,
+                    model_id,
+                    app_settings,
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "voice_get_device_status" => {
+                let res = tokio_rt.block_on(crate::voice_get_device_status(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "realtime_voice_get_status" => {
+                let res = tokio_rt.block_on(crate::realtime_voice_get_status(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "save_to_memory_cmd" => {
+                let content = args
+                    .get("content")
+                    .or_else(|| args.get("text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("user").to_string();
+                let res = tokio_rt.block_on(crate::memory::save_to_memory_cmd(app.clone(), content, source))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "get_memories_cmd" => {
+                let res = tokio_rt.block_on(crate::memory::get_memories_cmd(app.clone()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "search_memory_cmd" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+                let res = tokio_rt.block_on(crate::memory::search_memory_cmd(app.clone(), query, limit))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "delete_memory_cmd" => {
+                let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = tokio_rt.block_on(crate::memory::delete_memory_cmd(app.clone(), source))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "load_local_llm" => {
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let load_mode = args
+                    .get("loadMode")
+                    .or_else(|| args.get("load_mode"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("cpu")
+                    .to_string();
+                let res = tokio_rt.block_on(crate::llm::load_local_llm(app.clone(), path, load_mode))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "local_chat" => {
+                let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let emit_event = args
+                    .get("emitEvent")
+                    .or_else(|| args.get("emit_event"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::llm::local_chat(app.clone(), prompt, emit_event))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "stop_local_llm" => {
+                let res = tokio_rt.block_on(crate::llm::stop_local_llm())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "chat_command" => {
+                let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let session_id = args
+                    .get("sessionId")
+                    .or_else(|| args.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::chat::chat_command(app.clone(), message, session_id))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_history_add" => {
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_storage::browser_history_add(app.clone(), url, title, tab_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_history_get_recent" => {
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32);
+                let res = crate::browser_storage::browser_history_get_recent(limit, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_history_search" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32);
+                let res = crate::browser_storage::browser_history_search(query, limit, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_history_delete" => {
+                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_storage::browser_history_delete(app.clone(), id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_history_clear" => {
+                let res = crate::browser_storage::browser_history_clear(app.clone(), app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_add" => {
+                let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let folder_id = args.get("folderId").or_else(|| args.get("folder_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let favicon = args.get("favicon").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_storage::browser_bookmark_add(app.clone(), title, url, folder_id, favicon, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_update" => {
+                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let folder_id = args.get("folderId").or_else(|| args.get("folder_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_storage::browser_bookmark_update(app.clone(), id, title, url, folder_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_delete" => {
+                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_storage::browser_bookmark_delete(app.clone(), id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmarks_list" => {
+                let res = crate::browser_storage::browser_bookmarks_list(app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmarks_search" => {
+                let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_storage::browser_bookmarks_search(query, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_is_bookmarked" => {
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_storage::browser_bookmark_is_bookmarked(url, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_create_folder" => {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let parent_id = args.get("parentId").or_else(|| args.get("parent_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_storage::browser_bookmark_create_folder(app.clone(), name, parent_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_bookmark_delete_folder" => {
+                let folder_id = args.get("folderId").or_else(|| args.get("folder_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_storage::browser_bookmark_delete_folder(app.clone(), folder_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_start" => {
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let suggested_filename = args.get("suggestedFilename").or_else(|| args.get("suggested_filename")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_download::browser_download_start(app.clone(), url, tab_id, suggested_filename)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_cancel" => {
+                let download_id = args.get("downloadId").or_else(|| args.get("download_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_download::browser_download_cancel(download_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_list" => {
+                let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32);
+                let res = crate::browser_download::browser_download_list(limit, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_get" => {
+                let download_id = args.get("downloadId").or_else(|| args.get("download_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_download::browser_download_get(download_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_delete_record" => {
+                let download_id = args.get("downloadId").or_else(|| args.get("download_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_download::browser_download_delete_record(download_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_clear_records" => {
+                let res = crate::browser_download::browser_download_clear_records(app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_show_in_folder" => {
+                let download_id = args.get("downloadId").or_else(|| args.get("download_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_download::browser_download_show_in_folder(download_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_download_open_file" => {
+                let download_id = args.get("downloadId").or_else(|| args.get("download_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_download::browser_download_open_file(download_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profiles_list" => {
+                let res = crate::browser_profile::browser_profiles_list(app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_get" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_get(profile_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_create" => {
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let profile_type = args.get("profileType").or_else(|| args.get("profile_type")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_profile::browser_profile_create(app.clone(), name, profile_type)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_switch" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_switch(app.clone(), profile_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_rename" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let new_name = args.get("newName").or_else(|| args.get("new_name")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_rename(profile_id, new_name, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_delete" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_delete(app.clone(), profile_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_create_temporary" => {
+                let task_id = args.get("taskId").or_else(|| args.get("task_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_create_temporary(app.clone(), task_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_profile_cleanup_temporary" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_profile::browser_profile_cleanup_temporary(app.clone(), profile_id, app.state())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_get_status" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_get_status(tab_id, profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_toggle_protection" => {
+                let enabled = args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_toggle_protection(enabled, profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_allowlist_domain" => {
+                let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_allowlist_domain(domain, profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_remove_allowlist" => {
+                let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_remove_allowlist(domain, profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_add_block_rule" => {
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let rule_type = args.get("ruleType").or_else(|| args.get("rule_type")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let category = args.get("category").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_add_block_rule(pattern, rule_type, category, profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_remove_block_rule" => {
+                let rule_id = args.get("ruleId").or_else(|| args.get("rule_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_remove_block_rule(rule_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_list_rules" => {
+                let profile_id = args.get("profileId").or_else(|| args.get("profile_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_list_rules(profile_id, app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_get_tab_stats" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_get_tab_stats(tab_id))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_privacy_reset_stats" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = tokio_rt.block_on(crate::browser_privacy::browser_privacy_reset_stats(tab_id))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_request_ai_control" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let task_id = args.get("taskId").or_else(|| args.get("task_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let reason = args.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_control::browser_request_ai_control(app.clone(), tab_id, task_id, reason)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_takeover_tab" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let reason = args.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_control::browser_takeover_tab(app.clone(), tab_id, reason)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_release_ai_control" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_control::browser_release_ai_control(app.clone(), tab_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_pause_ai_control" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_control::browser_pause_ai_control(app.clone(), tab_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_resume_ai_control" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_control::browser_resume_ai_control(app.clone(), tab_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_get_tab_control_info" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_control::browser_get_tab_control_info(tab_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_get_all_tab_controls" => {
+                let res = crate::browser_control::browser_get_all_tab_controls()?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_assess_action_risk" => {
+                let tab_id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let action_type = args.get("actionType").or_else(|| args.get("action_type")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let target_url = args.get("targetUrl").or_else(|| args.get("target_url")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let selector = args.get("selector").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let text_payload = args.get("textPayload").or_else(|| args.get("text_payload")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let is_form_submission = args.get("isFormSubmission").or_else(|| args.get("is_form_submission")).and_then(|v| v.as_bool());
+                let domain = args.get("domain").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_risk::browser_assess_action_risk(
+                    tab_id,
+                    action_type,
+                    target_url,
+                    selector,
+                    text_payload,
+                    is_form_submission,
+                    domain,
+                )?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_get_risk_audit_log" => {
+                let res = crate::browser_risk::browser_get_risk_audit_log()?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_resolve_action_approval" => {
+                let approval_id = args.get("approvalId").or_else(|| args.get("approval_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let decision = args.get("decision").and_then(|v| v.as_str()).unwrap_or("DENIED").to_string();
+                let operator_reason = args.get("operatorReason").or_else(|| args.get("operator_reason")).and_then(|v| v.as_str()).map(|s| s.to_string());
+                let res = crate::browser_risk::browser_resolve_action_approval(approval_id, decision, operator_reason)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_run_startup_recovery" => {
+                let res = tokio_rt.block_on(crate::browser_recovery::browser_run_startup_recovery(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_agent_run_task" => {
+                let goal = args.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let max_steps = args.get("maxSteps").or_else(|| args.get("max_steps")).and_then(|v| v.as_u64()).map(|n| n as u32);
+                let timeout_ms = args.get("timeoutMs").or_else(|| args.get("timeout_ms")).and_then(|v| v.as_u64());
+                let res = tokio_rt.block_on(crate::browser_agent::browser_agent_run_task(
+                    app.clone(),
+                    goal,
+                    max_steps,
+                    timeout_ms,
+                    app.state(),
+                    app.state(),
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_agent_cancel_task" => {
+                let task_id = args.get("taskId").or_else(|| args.get("task_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = tokio_rt.block_on(crate::browser_agent::browser_agent_cancel_task(
+                    app.clone(),
+                    task_id,
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_agent_get_current_task" => {
+                let res = tokio_rt.block_on(crate::browser_agent::browser_agent_get_current_task(app.state()))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_orchestrator_run_task" => {
+                let goal = args.get("goal").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let subtask_goals: Option<Vec<String>> = args.get("subtaskGoals").or_else(|| args.get("subtask_goals"))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let global_max_steps = args.get("globalMaxSteps").or_else(|| args.get("global_max_steps")).and_then(|v| v.as_u64()).map(|n| n as u32);
+                let timeout_ms = args.get("timeoutMs").or_else(|| args.get("timeout_ms")).and_then(|v| v.as_u64());
+                let res = tokio_rt.block_on(crate::browser_orchestrator::browser_orchestrator_run_task(
+                    app.clone(),
+                    goal,
+                    subtask_goals,
+                    global_max_steps,
+                    timeout_ms,
+                    app.state(),
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_orchestrator_cancel_task" => {
+                let orchestration_id = args.get("orchestrationId").or_else(|| args.get("orchestration_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let res = crate::browser_orchestrator::browser_orchestrator_cancel_task(orchestration_id)?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_orchestrator_get_current_task" => {
+                let res = crate::browser_orchestrator::browser_orchestrator_get_current_task()?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_get_tool_definitions_cmd" => {
+                let res = tokio_rt.block_on(crate::browser_tools::browser_get_tool_definitions_cmd())?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
+            "browser_execute_tool_cmd" => {
+                let tool_name = args
+                    .get("toolName")
+                    .or_else(|| args.get("tool_name"))
+                    .or_else(|| args.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = args
+                    .get("arguments")
+                    .or_else(|| args.get("args"))
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let res = tokio_rt.block_on(crate::browser_tools::browser_execute_tool_cmd(
+                    app.clone(),
+                    tool_name,
+                    arguments,
+                    app.state(),
+                ))?;
+                Ok(serde_json::to_value(res).unwrap())
+            }
+
             "browser_show" | "browser_show_active" => crate::cef::tabs::show_active(args),
             "browser_hide" | "browser_hide_all" => crate::cef::tabs::hide_all(),
             "browser_destroy" => crate::cef::tabs::hide_all(),
@@ -576,47 +1192,49 @@ impl JorenCore {
             "browser_create_tab" | "browser_create" => crate::cef::tabs::create_tab(args),
             "browser_switch_tab" => crate::cef::tabs::switch_tab(args),
             "browser_close_tab" => crate::cef::tabs::close_tab(args),
+            "browser_close_other_tabs" => crate::cef::tabs::close_other_tabs(args),
+            "browser_close_tabs_to_right" => crate::cef::tabs::close_tabs_to_right(args),
+            "browser_duplicate_tab" => crate::cef::tabs::duplicate_tab(args),
+            "browser_reopen_last_closed_tab" => crate::cef::tabs::reopen_last_closed_tab(args),
+            "browser_toggle_pin_tab" => crate::cef::tabs::toggle_pin_tab(args),
+            "browser_save_session" => crate::cef::tabs::save_session(args),
+            "browser_restore_session" => crate::cef::tabs::restore_session(args),
             "browser_navigate_tab" | "browser_navigate" => crate::cef::tabs::navigate_tab(args),
             "browser_get_multi_state" => crate::cef::tabs::get_state(),
             "browser_get_url" | "browser_get_tab_url" => crate::cef::tabs::active_url(args),
-            "browser_click_element" => {
-                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
-                let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
-                let script = format!(
-                    "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(!t)return;t.scrollIntoView({{block:'center'}});t.focus();t.click();}})();"
-                );
-                crate::cef::tabs::run_script(args, script)
-            }
-            "browser_type_element" => {
-                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
-                let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
-                let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'");
-                let script = format!(
-                    "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.focus();t.value='{escaped_text}';t.dispatchEvent(new Event('input',{{bubbles:true}}));}})();"
-                );
-                crate::cef::tabs::run_script(args, script)
-            }
-            "browser_scroll" => {
-                let dy = args.get("deltaY").and_then(|v| v.as_f64()).unwrap_or(400.0) as i32;
-                crate::cef::tabs::run_script(args, format!("window.scrollBy(0,{dy});"))
-            }
-            "browser_press_key" => {
-                let key = args.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
-                let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
-                crate::cef::tabs::run_script(
-                    args,
-                    format!("document.activeElement&&document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{{key:'{escaped}',bubbles:true}}));"),
-                )
-            }
-            "browser_focus_element" => {
-                let element_id = args.get("elementId").and_then(|v| v.as_str()).unwrap_or("");
-                let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
-                crate::cef::tabs::run_script(
-                    args,
-                    format!("(function(){{var t=document.getElementById('{escaped}');if(t)t.focus();}})();"),
-                )
-            }
+            "browser_get_title" | "browser_get_tab_title" => crate::cef::tabs::get_tab_title(args),
+            "browser_get_visible_text" | "browser_get_tab_visible_text" => crate::cef::tabs::get_visible_text(args),
+            "browser_observe_tab" => crate::cef::tabs::observe_tab(args),
+            "browser_click_element" => crate::cef::tabs::click_element(args),
+            "browser_type_element" => crate::cef::tabs::type_element(args),
+            "browser_select_option" => crate::cef::tabs::select_option(args),
+            "browser_focus_element" => crate::cef::tabs::focus_element(args),
+            "browser_scroll" => crate::cef::tabs::scroll(args),
+            "browser_press_key" => crate::cef::tabs::press_key(args),
+            "browser_wait" => crate::cef::tabs::wait_for_condition(args),
+            "browser_screenshot_tab" => crate::cef::tabs::screenshot_tab(args),
+            "browser_zoom_set" => crate::cef::tabs::zoom_set(args),
+            "browser_zoom_in" => crate::cef::tabs::zoom_in(args),
+            "browser_zoom_out" => crate::cef::tabs::zoom_out(args),
+            "browser_zoom_reset" => crate::cef::tabs::zoom_reset(args),
+            "browser_find_in_page" => crate::cef::tabs::find_in_page(args),
+            "browser_clear_find" => crate::cef::tabs::clear_find(args),
+            "browser_print_tab" => crate::cef::tabs::print_tab(args),
+            "browser_save_page_html" => crate::cef::tabs::save_page_html(args),
+            "browser_open_link_tab" => crate::cef::tabs::open_link_tab(args),
+            "browser_reader_extract" => crate::cef::tabs::reader_extract(args),
+            "browser_reader_mode_enter" => crate::cef::tabs::reader_mode_enter(args),
+            "browser_reader_mode_exit" => crate::cef::tabs::reader_mode_exit(args),
+            "browser_reader_mode_get" => crate::cef::tabs::reader_mode_get(args),
+            "browser_tab_group_create" => crate::cef::tabs::tab_group_create(args),
+            "browser_tab_group_rename" => crate::cef::tabs::tab_group_rename(args),
+            "browser_tab_group_delete" => crate::cef::tabs::tab_group_delete(args),
+            "browser_tab_group_list" => crate::cef::tabs::tab_group_list(args),
+            "browser_tab_group_set_collapsed" => crate::cef::tabs::tab_group_set_collapsed(args),
+            "browser_tab_group_move_tab" => crate::cef::tabs::tab_group_move_tab(args),
+            "browser_tab_group_remove_tab" => crate::cef::tabs::tab_group_remove_tab(args),
+            "browser_tab_group_reorder" => crate::cef::tabs::tab_group_reorder(args),
+            "browser_tab_group_close_tabs" => crate::cef::tabs::tab_group_close_tabs(args),
 
             "realtime_voice_stop" => {
                 let res = tokio_rt.block_on(crate::realtime_voice_stop(app.state()))?;
@@ -665,6 +1283,223 @@ impl JorenCore {
                 Err(format!("Unknown or unsupported command: '{}'", cmd))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_core_dispatch_command_inventory() {
+        let commands = [
+            "ping",
+            "get_base_dir",
+            "get_all_settings",
+            "save_setting",
+            "sync_settings",
+            "get_all_sessions",
+            "create_session",
+            "rename_session",
+            "delete_session",
+            "get_session_messages",
+            "save_session_message",
+            "get_personal_notes",
+            "save_personal_note",
+            "delete_personal_note",
+            "get_custom_apps",
+            "add_custom_app",
+            "delete_custom_app",
+            "sync_apps_registry",
+            "launch_app",
+            "ai_list_providers",
+            "ai_list_models",
+            "ai_query_capabilities",
+            "conversation_submit_turn",
+            "conversation_execute_turn",
+            "conversation_cancel_turn",
+            "conversation_get_turn_status",
+            "task_create",
+            "task_cancel",
+            "task_get_status",
+            "task_list_active",
+            "runtime_get_status",
+            "runtime_get_capabilities",
+            "get_providers",
+            "fetch_custom_models",
+            "tts_speak",
+            "tts_stop",
+            "transcribe_audio",
+            "agent_status",
+            "agent_chat",
+            "agent_set_path",
+            "agent_reset",
+            "agent_resolve_proposal",
+            "get_builtin_apps",
+            "get_plugins",
+            "toggle_plugin",
+            "plugin_system_terminal",
+            "plugin_system_control",
+            "plugin_app_launcher",
+            "plugin_web_search",
+            "plugin_media_player",
+            "plugin_whatsapp",
+            "plugin_gmail",
+            "take_screenshot",
+            "get_weather",
+            "voice_list_devices",
+            "voice_get_status",
+            "voice_stop_playback",
+            "voice_set_input_device",
+            "voice_set_output_device",
+            "voice_session_cancel",
+            "voice_session_start",
+            "voice_session_submit_transcript",
+            "voice_get_device_status",
+            "realtime_voice_get_status",
+            "realtime_voice_stop",
+            "realtime_voice_start",
+            "policy_evaluate_action",
+            "policy_list_pending_approvals",
+            "policy_resolve_approval",
+            "policy_get_audit_log",
+            "tools_list_definitions",
+            "tools_get_definition",
+            "tools_execute",
+            "tools_cancel_execution",
+            "save_to_memory_cmd",
+            "get_memories_cmd",
+            "search_memory_cmd",
+            "delete_memory_cmd",
+            "load_local_llm",
+            "local_chat",
+            "stop_local_llm",
+            "chat_command",
+            "browser_history_add",
+            "browser_history_get_recent",
+            "browser_history_search",
+            "browser_history_delete",
+            "browser_history_clear",
+            "browser_bookmark_add",
+            "browser_bookmark_update",
+            "browser_bookmark_delete",
+            "browser_bookmarks_list",
+            "browser_bookmarks_search",
+            "browser_bookmark_is_bookmarked",
+            "browser_bookmark_create_folder",
+            "browser_bookmark_delete_folder",
+            "browser_download_start",
+            "browser_download_cancel",
+            "browser_download_list",
+            "browser_download_get",
+            "browser_download_delete_record",
+            "browser_download_clear_records",
+            "browser_download_show_in_folder",
+            "browser_download_open_file",
+            "browser_profiles_list",
+            "browser_profile_get",
+            "browser_profile_create",
+            "browser_profile_switch",
+            "browser_profile_rename",
+            "browser_profile_delete",
+            "browser_profile_create_temporary",
+            "browser_profile_cleanup_temporary",
+            "browser_privacy_get_status",
+            "browser_privacy_toggle_protection",
+            "browser_privacy_allowlist_domain",
+            "browser_privacy_remove_allowlist",
+            "browser_privacy_add_block_rule",
+            "browser_privacy_remove_block_rule",
+            "browser_privacy_list_rules",
+            "browser_privacy_get_tab_stats",
+            "browser_privacy_reset_stats",
+            "browser_request_ai_control",
+            "browser_takeover_tab",
+            "browser_release_ai_control",
+            "browser_pause_ai_control",
+            "browser_resume_ai_control",
+            "browser_get_tab_control_info",
+            "browser_get_all_tab_controls",
+            "browser_assess_action_risk",
+            "browser_get_risk_audit_log",
+            "browser_resolve_action_approval",
+            "browser_run_startup_recovery",
+            "browser_agent_run_task",
+            "browser_agent_cancel_task",
+            "browser_agent_get_current_task",
+            "browser_orchestrator_run_task",
+            "browser_orchestrator_cancel_task",
+            "browser_orchestrator_get_current_task",
+            "browser_get_tool_definitions_cmd",
+            "browser_execute_tool_cmd",
+            "browser_show",
+            "browser_show_active",
+            "browser_hide",
+            "browser_hide_all",
+            "browser_destroy",
+            "browser_set_bounds",
+            "browser_set_bounds_all",
+            "browser_go_back",
+            "browser_go_back_tab",
+            "browser_go_forward",
+            "browser_go_forward_tab",
+            "browser_reload",
+            "browser_reload_tab",
+            "browser_create_tab",
+            "browser_create",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_close_other_tabs",
+            "browser_close_tabs_to_right",
+            "browser_duplicate_tab",
+            "browser_reopen_last_closed_tab",
+            "browser_toggle_pin_tab",
+            "browser_save_session",
+            "browser_restore_session",
+            "browser_navigate_tab",
+            "browser_navigate",
+            "browser_get_multi_state",
+            "browser_get_url",
+            "browser_get_tab_url",
+            "browser_get_title",
+            "browser_get_tab_title",
+            "browser_get_visible_text",
+            "browser_get_tab_visible_text",
+            "browser_observe_tab",
+            "browser_click_element",
+            "browser_type_element",
+            "browser_select_option",
+            "browser_focus_element",
+            "browser_scroll",
+            "browser_press_key",
+            "browser_wait",
+            "browser_screenshot_tab",
+            "browser_zoom_set",
+            "browser_zoom_in",
+            "browser_zoom_out",
+            "browser_zoom_reset",
+            "browser_find_in_page",
+            "browser_clear_find",
+            "browser_print_tab",
+            "browser_save_page_html",
+            "browser_open_link_tab",
+            "browser_reader_extract",
+            "browser_reader_mode_enter",
+            "browser_reader_mode_exit",
+            "browser_reader_mode_get",
+            "browser_tab_group_create",
+            "browser_tab_group_rename",
+            "browser_tab_group_delete",
+            "browser_tab_group_list",
+            "browser_tab_group_set_collapsed",
+            "browser_tab_group_move_tab",
+            "browser_tab_group_remove_tab",
+            "browser_tab_group_reorder",
+            "browser_tab_group_close_tabs",
+            "smoke_test_verify",
+            "smoke_test_ack",
+        ];
+        assert!(commands.len() >= 180);
     }
 }
 

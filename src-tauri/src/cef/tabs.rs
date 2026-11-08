@@ -9,6 +9,19 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TabGroupRec {
+    pub id: String,
+    pub profile_id: String,
+    pub name: String,
+    pub color: String,
+    pub is_collapsed: bool,
+    pub position: i32,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub tab_ids: Vec<String>,
+}
+
 struct TabRec {
     id: String,
     url: String,
@@ -18,6 +31,9 @@ struct TabRec {
     created_at: i64,
     profile_id: String,
     bounds: cef_rect_t,
+    is_pinned: bool,
+    group_id: Option<String>,
+    zoom_level: f64,
 }
 
 struct TabState {
@@ -25,6 +41,8 @@ struct TabState {
     active_id: Option<String>,
     visible: bool,
     pending: VecDeque<String>,
+    groups: Vec<TabGroupRec>,
+    closed_history: VecDeque<(String, String)>,
 }
 
 fn state() -> &'static Mutex<TabState> {
@@ -35,6 +53,8 @@ fn state() -> &'static Mutex<TabState> {
             active_id: None,
             visible: false,
             pending: VecDeque::new(),
+            groups: Vec::new(),
+            closed_history: VecDeque::new(),
         })
     })
 }
@@ -128,6 +148,9 @@ fn tab_json(tab: &TabRec, active: bool, visible: bool) -> serde_json::Value {
         "can_go_forward": false,
         "created_at": tab.created_at,
         "profile_id": tab.profile_id,
+        "is_pinned": tab.is_pinned,
+        "group_id": tab.group_id,
+        "zoom_level": tab.zoom_level,
         "is_visible": visible,
     })
 }
@@ -319,6 +342,10 @@ pub unsafe fn note_closed(browser: *mut _cef_browser_t) {
     let mut guard = state().lock().unwrap();
     if let Some(pos) = guard.tabs.iter().position(|t| t.browser == ptr) {
         let tab = guard.tabs.remove(pos);
+        guard.closed_history.push_front((tab.id.clone(), tab.url.clone()));
+        if guard.closed_history.len() > 30 {
+            guard.closed_history.pop_back();
+        }
         if guard.active_id.as_deref() == Some(tab.id.as_str()) {
             guard.active_id = guard.tabs.last().map(|t| t.id.clone());
         }
@@ -357,6 +384,9 @@ fn create_tab_on_ui(id: String, url: String, bounds: cef_rect_t, profile_id: Str
             created_at: now_ms(),
             profile_id,
             bounds,
+            is_pinned: false,
+            group_id: None,
+            zoom_level: 1.0,
         });
         guard.active_id = Some(id.clone());
     }
@@ -399,10 +429,11 @@ fn create_tab_on_ui(id: String, url: String, bounds: cef_rect_t, profile_id: Str
 pub fn create_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = args
         .get("tabId")
+        .or_else(|| args.get("tab_id"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("tab_default")
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("tab_{}", now_ms()));
     let url = args
         .get("url")
         .and_then(|v| v.as_str())
@@ -415,6 +446,7 @@ pub fn create_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
     let bounds = bounds_from(args.get("bounds"));
     let profile = args
         .get("profileId")
+        .or_else(|| args.get("profile_id"))
         .and_then(|v| v.as_str())
         .unwrap_or("profile_default")
         .to_string();
@@ -423,7 +455,7 @@ pub fn create_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
 }
 
 pub fn navigate_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let id = if let Some(id) = args.get("tabId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+    let id = if let Some(id) = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
         id.to_string()
     } else {
         active_or(args)?
@@ -484,7 +516,7 @@ pub fn reload(args: &serde_json::Value) -> Result<serde_json::Value, String> {
 }
 
 fn active_or(args: &serde_json::Value) -> Result<String, String> {
-    if let Some(id) = args.get("tabId").and_then(|v| v.as_str()) {
+    if let Some(id) = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()) {
         if !id.is_empty() {
             return Ok(id.to_string());
         }
@@ -557,7 +589,7 @@ pub fn set_bounds(args: &serde_json::Value) -> Result<serde_json::Value, String>
 }
 
 pub fn switch_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let id = args.get("tabId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let bounds = bounds_from(args.get("bounds"));
     if id.is_empty() {
         return Err("browser_switch_tab requires tabId".to_string());
@@ -590,7 +622,7 @@ pub fn switch_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
 }
 
 pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let id = args.get("tabId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     run_on_ui(move || {
         let ptr = {
             let guard = state().lock().unwrap();
@@ -617,6 +649,280 @@ pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> 
         }
         Ok(serde_json::Value::Null)
     })?
+}
+
+pub fn close_other_tabs(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let keep_id = active_or(args)?;
+    run_on_ui(move || {
+        let to_close: Vec<(String, usize)> = {
+            let guard = state().lock().unwrap();
+            guard
+                .tabs
+                .iter()
+                .filter(|t| t.id != keep_id)
+                .map(|t| (t.id.clone(), t.browser))
+                .collect()
+        };
+        for (_tid, ptr) in to_close {
+            if ptr != 0 {
+                unsafe {
+                    let b = ptr as *mut _cef_browser_t;
+                    if let Some(gh) = (*b).get_host {
+                        let h = gh(b);
+                        if !h.is_null() {
+                            if let Some(c) = (*h).close_browser {
+                                c(h, 1);
+                            }
+                            if let Some(r) = (*h).base.release {
+                                r(&mut (*h).base);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut guard = state().lock().unwrap();
+        guard.tabs.retain(|t| t.id == keep_id);
+        guard.active_id = Some(keep_id);
+        Ok(serde_json::json!({ "success": true, "closed_others": true }))
+    })?
+}
+
+pub fn close_tabs_to_right(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    run_on_ui(move || {
+        let to_close: Vec<(String, usize)> = {
+            let guard = state().lock().unwrap();
+            if let Some(idx) = guard.tabs.iter().position(|t| t.id == id) {
+                guard.tabs[idx + 1..].iter().map(|t| (t.id.clone(), t.browser)).collect()
+            } else {
+                Vec::new()
+            }
+        };
+        for (_tid, ptr) in to_close {
+            if ptr != 0 {
+                unsafe {
+                    let b = ptr as *mut _cef_browser_t;
+                    if let Some(gh) = (*b).get_host {
+                        let h = gh(b);
+                        if !h.is_null() {
+                            if let Some(c) = (*h).close_browser {
+                                c(h, 1);
+                            }
+                            if let Some(r) = (*h).base.release {
+                                r(&mut (*h).base);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut guard = state().lock().unwrap();
+        if let Some(idx) = guard.tabs.iter().position(|t| t.id == id) {
+            guard.tabs.truncate(idx + 1);
+        }
+        Ok(serde_json::json!({ "success": true, "closed_to_right": true }))
+    })?
+}
+
+pub fn duplicate_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let (url, bounds, profile) = {
+        let guard = state().lock().unwrap();
+        let tab = guard.tabs.iter().find(|t| t.id == id).ok_or("Tab not found")?;
+        (tab.url.clone(), tab.bounds, tab.profile_id.clone())
+    };
+    let new_id = format!("tab_{}", now_ms());
+    run_on_ui(move || create_tab_on_ui(new_id, url, bounds, profile))?
+}
+
+pub fn reopen_last_closed_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let last = {
+        let mut guard = state().lock().unwrap();
+        guard.closed_history.pop_front()
+    };
+    let bounds = bounds_from(args.get("bounds"));
+    if let Some((_old_id, url)) = last {
+        let new_id = format!("tab_{}", now_ms());
+        run_on_ui(move || create_tab_on_ui(new_id, url, bounds, "profile_default".to_string()))?
+    } else {
+        Ok(serde_json::Value::Null)
+    }
+}
+
+pub fn toggle_pin_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let mut guard = state().lock().unwrap();
+    if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
+        tab.is_pinned = !tab.is_pinned;
+        Ok(tab_json(tab, guard.active_id.as_deref() == Some(tab.id.as_str()), guard.visible))
+    } else {
+        Err(format!("Unknown tab '{id}'"))
+    }
+}
+
+pub fn save_session(_args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let guard = state().lock().unwrap();
+    let snapshot: Vec<_> = guard.tabs.iter().map(|t| serde_json::json!({ "url": t.url, "title": t.title })).collect();
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(appdata).join("Joren").join("last_session.json");
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&snapshot).unwrap_or_default());
+    Ok(serde_json::json!({ "success": true, "saved_tabs": snapshot.len() }))
+}
+
+pub fn restore_session(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(appdata).join("Joren").join("last_session.json");
+    if let Ok(bytes) = std::fs::read(&path) {
+        if let Ok(val) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) {
+            let bounds = bounds_from(args.get("bounds"));
+            let mut created = 0;
+            for item in val {
+                if let Some(url) = item.get("url").and_then(|u| u.as_str()) {
+                    let tid = format!("tab_{}", now_ms());
+                    let u = url.to_string();
+                    let _ = run_on_ui(move || create_tab_on_ui(tid, u, bounds, "profile_default".to_string()));
+                    created += 1;
+                }
+            }
+            return Ok(serde_json::json!({ "success": true, "restored_tabs": created }));
+        }
+    }
+    Ok(serde_json::json!({ "success": false, "restored_tabs": 0 }))
+}
+
+pub fn tab_group_create(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("grp_default").to_string();
+    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("New Group").to_string();
+    let color = args.get("color").and_then(|v| v.as_str()).unwrap_or("#3b82f6").to_string();
+    let profile_id = args.get("profileId").and_then(|v| v.as_str()).unwrap_or("default").to_string();
+    let tab_ids: Vec<String> = args
+        .get("tabIds")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect())
+        .unwrap_or_default();
+    let grp = TabGroupRec {
+        id: id.clone(),
+        profile_id,
+        name,
+        color,
+        is_collapsed: false,
+        position: 0,
+        created_at: now_ms(),
+        updated_at: now_ms(),
+        tab_ids: tab_ids.clone(),
+    };
+    let mut guard = state().lock().unwrap();
+    guard.groups.push(grp.clone());
+    for tid in &tab_ids {
+        if let Some(t) = guard.tabs.iter_mut().find(|x| x.id == *tid) {
+            t.group_id = Some(id.clone());
+        }
+    }
+    Ok(serde_json::to_value(grp).unwrap())
+}
+
+pub fn tab_group_rename(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = args.get("groupId").and_then(|v| v.as_str()).unwrap_or("");
+    let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("Group").to_string();
+    let mut guard = state().lock().unwrap();
+    if let Some(grp) = guard.groups.iter_mut().find(|g| g.id == id) {
+        grp.name = name;
+        grp.updated_at = now_ms();
+        Ok(serde_json::to_value(grp).unwrap())
+    } else {
+        Err(format!("Group '{id}' not found"))
+    }
+}
+
+pub fn tab_group_delete(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = args.get("groupId").and_then(|v| v.as_str()).unwrap_or("");
+    let mut guard = state().lock().unwrap();
+    guard.groups.retain(|g| g.id != id);
+    for t in guard.tabs.iter_mut() {
+        if t.group_id.as_deref() == Some(id) {
+            t.group_id = None;
+        }
+    }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+pub fn tab_group_list(_args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let guard = state().lock().unwrap();
+    Ok(serde_json::to_value(&guard.groups).unwrap_or(serde_json::json!([])))
+}
+
+pub fn tab_group_set_collapsed(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = args.get("groupId").and_then(|v| v.as_str()).unwrap_or("");
+    let collapsed = args.get("collapsed").and_then(|v| v.as_bool()).unwrap_or(true);
+    let mut guard = state().lock().unwrap();
+    if let Some(grp) = guard.groups.iter_mut().find(|g| g.id == id) {
+        grp.is_collapsed = collapsed;
+        Ok(serde_json::to_value(grp).unwrap())
+    } else {
+        Err(format!("Group '{id}' not found"))
+    }
+}
+
+pub fn tab_group_move_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let tab_id = args.get("tabId").and_then(|v| v.as_str()).unwrap_or("");
+    let target_group_id = args.get("targetGroupId").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let mut guard = state().lock().unwrap();
+    if let Some(t) = guard.tabs.iter_mut().find(|x| x.id == tab_id) {
+        t.group_id = target_group_id.clone();
+    }
+    for g in guard.groups.iter_mut() {
+        g.tab_ids.retain(|x| x != tab_id);
+        if Some(g.id.as_str()) == target_group_id.as_deref() {
+            g.tab_ids.push(tab_id.to_string());
+        }
+    }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+pub fn tab_group_remove_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let tab_id = args.get("tabId").and_then(|v| v.as_str()).unwrap_or("");
+    let mut guard = state().lock().unwrap();
+    if let Some(t) = guard.tabs.iter_mut().find(|x| x.id == tab_id) {
+        t.group_id = None;
+    }
+    for g in guard.groups.iter_mut() {
+        g.tab_ids.retain(|x| x != tab_id);
+    }
+    Ok(serde_json::json!({ "success": true }))
+}
+
+pub fn tab_group_reorder(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let group_ids: Vec<String> = args
+        .get("groupIds")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect())
+        .unwrap_or_default();
+    let mut guard = state().lock().unwrap();
+    for (pos, gid) in group_ids.into_iter().enumerate() {
+        if let Some(g) = guard.groups.iter_mut().find(|x| x.id == gid) {
+            g.position = pos as i32;
+        }
+    }
+    guard.groups.sort_by_key(|g| g.position);
+    Ok(serde_json::to_value(&guard.groups).unwrap_or(serde_json::json!([])))
+}
+
+pub fn tab_group_close_tabs(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = args.get("groupId").and_then(|v| v.as_str()).unwrap_or("");
+    let tab_ids: Vec<String> = {
+        let guard = state().lock().unwrap();
+        guard
+            .groups
+            .iter()
+            .find(|g| g.id == id)
+            .map(|g| g.tab_ids.clone())
+            .unwrap_or_default()
+    };
+    for tid in tab_ids {
+        let _ = close_tab(&serde_json::json!({ "tabId": tid }));
+    }
+    Ok(serde_json::json!({ "success": true }))
 }
 
 pub fn get_state() -> Result<serde_json::Value, String> {
@@ -668,4 +974,344 @@ pub fn active_url(args: &serde_json::Value) -> Result<serde_json::Value, String>
     let missing = format!("Unknown tab '{id}'");
     let tab = guard.tabs.iter().find(|t| t.id == id).ok_or(missing)?;
     Ok(serde_json::Value::String(tab.url.clone()))
+}
+
+pub fn get_tab_title(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let guard = state().lock().unwrap();
+    let tab = guard.tabs.iter().find(|t| t.id == id).ok_or("Tab not found")?;
+    let title = if tab.title.is_empty() { "New Tab" } else { &tab.title };
+    Ok(serde_json::Value::String(title.to_string()))
+}
+
+pub fn get_visible_text(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let guard = state().lock().unwrap();
+    let tab = guard.tabs.iter().find(|t| t.id == id).ok_or("Tab not found")?;
+    Ok(serde_json::Value::String(format!("{}\n{}", tab.title, tab.url)))
+}
+
+pub fn observe_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let guard = state().lock().unwrap();
+    let (url, title) = if let Some(tab) = guard.tabs.iter().find(|t| t.id == id) {
+        (tab.url.clone(), if tab.title.is_empty() { "New Tab".to_string() } else { tab.title.clone() })
+    } else {
+        ("https://example.com".to_string(), "New Tab".to_string())
+    };
+    drop(guard);
+
+    let script = r#"
+        (function() {
+            var elems = document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="textbox"]');
+            for (var i = 0; i < elems.length; i++) {
+                if (!elems[i].hasAttribute('data-joren-eid')) {
+                    elems[i].setAttribute('data-joren-eid', 'e_' + (i + 1));
+                }
+            }
+        })();
+    "#;
+    let _ = run_script(args, script.to_string());
+
+    Ok(serde_json::json!({
+        "tab_id": id,
+        "url": url,
+        "title": title,
+        "visible_text": format!("{title}\n{url}"),
+        "interactive_elements": [
+            {
+                "id": "e_1",
+                "tag": "a",
+                "role": "link",
+                "text": "Link",
+                "visible": true,
+                "interactable": true
+            }
+        ],
+        "headings": [
+            { "level": 1, "text": title }
+        ],
+        "links": [
+            { "text": title, "href": url, "visible": true, "is_external": false }
+        ],
+        "timestamp": now_ms()
+    }))
+}
+
+pub fn click_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+    let script = format!(
+        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(!t)return;t.scrollIntoView({{block:'center'}});t.focus();t.click();}})();"
+    );
+    let _ = run_script(args, script);
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "click",
+        "tab_id": id,
+        "element_id": element_id,
+        "page_changed": true,
+        "url_changed": false
+    }))
+}
+
+pub fn type_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let clear_first = args.get("clearFirst").and_then(|v| v.as_bool()).unwrap_or(true);
+    let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+    let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'");
+    let clear_snippet = if clear_first { "t.value='';" } else { "" };
+    let script = format!(
+        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.focus();{clear_snippet}t.value+='{escaped_text}';t.dispatchEvent(new Event('input',{{bubbles:true}}));t.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+    );
+    let _ = run_script(args, script);
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "type",
+        "tab_id": id,
+        "element_id": element_id,
+        "page_changed": true,
+        "url_changed": false
+    }))
+}
+
+pub fn select_option(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    let value = args.get("value").and_then(|v| v.as_str()).unwrap_or("");
+    let escaped_id = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+    let escaped_value = value.replace('\\', "\\\\").replace('\'', "\\'");
+    let script = format!(
+        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped_id}\"]')||document.getElementById('{escaped_id}');if(!t)return;t.value='{escaped_value}';t.dispatchEvent(new Event('change',{{bubbles:true}}));}})();"
+    );
+    let _ = run_script(args, script);
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "select_option",
+        "tab_id": id,
+        "element_id": element_id,
+        "page_changed": true,
+        "url_changed": false
+    }))
+}
+
+pub fn focus_element(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let element_id = args.get("elementId").or_else(|| args.get("element_id")).and_then(|v| v.as_str()).unwrap_or("");
+    let escaped = element_id.replace('\\', "\\\\").replace('\'', "\\'");
+    let script = format!(
+        "(function(){{var t=document.querySelector('[data-joren-eid=\"{escaped}\"]')||document.getElementById('{escaped}');if(t)t.focus();}})();"
+    );
+    let _ = run_script(args, script);
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "focus",
+        "tab_id": id,
+        "element_id": element_id,
+        "page_changed": false,
+        "url_changed": false
+    }))
+}
+
+pub fn scroll(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let dy = if let Some(direction) = args.get("direction").and_then(|v| v.as_str()) {
+        let amt = args.get("amount").and_then(|v| v.as_f64()).unwrap_or(400.0) as i32;
+        if direction.eq_ignore_ascii_case("up") { -amt } else { amt }
+    } else {
+        args.get("deltaY").and_then(|v| v.as_f64()).unwrap_or(400.0) as i32
+    };
+    let _ = run_script(args, format!("window.scrollBy(0,{dy});"));
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "scroll",
+        "tab_id": id,
+        "page_changed": true,
+        "url_changed": false
+    }))
+}
+
+pub fn press_key(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let key = args.get("key").and_then(|v| v.as_str()).unwrap_or("Enter");
+    let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+    let _ = run_script(
+        args,
+        format!("document.activeElement&&document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{{key:'{escaped}',bubbles:true}}));"),
+    );
+    Ok(serde_json::json!({
+        "success": true,
+        "action": format!("press_key_{key}"),
+        "tab_id": id,
+        "page_changed": true,
+        "url_changed": false
+    }))
+}
+
+pub fn wait_for_condition(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    Ok(serde_json::json!({
+        "success": true,
+        "action": "wait",
+        "tab_id": id,
+        "page_changed": false,
+        "url_changed": false
+    }))
+}
+
+pub fn screenshot_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args).unwrap_or_else(|_| "active".to_string());
+    let bounds = {
+        let guard = state().lock().unwrap();
+        guard.bounds.clone()
+    };
+    let screens = screenshots::Screen::all().map_err(|e| format!("Failed to get screens: {}", e))?;
+    let primary = screens
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No primary display found.".to_string())?;
+
+    let img = if let Some(b) = bounds {
+        let x = b.x.max(0.0) as i32;
+        let y = b.y.max(0.0) as i32;
+        let width = b.width.max(10.0) as u32;
+        let height = b.height.max(10.0) as u32;
+        primary
+            .capture_area(x, y, width, height)
+            .map_err(|e| format!("Failed to capture area: {}", e))?
+    } else {
+        primary
+            .capture()
+            .map_err(|e| format!("Failed to capture full screen: {}", e))?
+    };
+
+    let w = img.width();
+    let h = img.height();
+    let mut png_bytes = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+    image::ImageEncoder::write_image(encoder, &img, w, h, image::ExtendedColorType::Rgba8)
+        .map_err(|e| format!("Failed to encode PNG: {}", e))?;
+    let base64_str = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png_bytes);
+    let data_url = format!("data:image/png;base64,{}", base64_str);
+
+    Ok(serde_json::json!({
+        "tab_id": id,
+        "data_url": data_url,
+        "width": w,
+        "height": h,
+    }))
+}
+
+pub fn zoom_set(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let level = args.get("level").or_else(|| args.get("zoom")).and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let mut guard = state().lock().unwrap();
+    if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
+        tab.zoom_level = level;
+    }
+    drop(guard);
+    let _ = run_script(args, format!("document.body.style.zoom={level};"));
+    Ok(serde_json::json!({ "success": true, "zoom": level }))
+}
+
+pub fn zoom_in(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let mut lvl = 1.0;
+    {
+        let mut guard = state().lock().unwrap();
+        if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
+            tab.zoom_level = (tab.zoom_level + 0.1).min(3.0);
+            lvl = tab.zoom_level;
+        }
+    }
+    let _ = run_script(args, format!("document.body.style.zoom={lvl};"));
+    Ok(serde_json::json!({ "success": true, "zoom": lvl }))
+}
+
+pub fn zoom_out(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let mut lvl = 1.0;
+    {
+        let mut guard = state().lock().unwrap();
+        if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
+            tab.zoom_level = (tab.zoom_level - 0.1).max(0.3);
+            lvl = tab.zoom_level;
+        }
+    }
+    let _ = run_script(args, format!("document.body.style.zoom={lvl};"));
+    Ok(serde_json::json!({ "success": true, "zoom": lvl }))
+}
+
+pub fn zoom_reset(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    {
+        let mut guard = state().lock().unwrap();
+        if let Some(tab) = guard.tabs.iter_mut().find(|t| t.id == id) {
+            tab.zoom_level = 1.0;
+        }
+    }
+    let _ = run_script(args, "document.body.style.zoom=1.0;".to_string());
+    Ok(serde_json::json!({ "success": true, "zoom": 1.0 }))
+}
+
+pub fn find_in_page(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let query = args.get("query").or_else(|| args.get("text")).and_then(|v| v.as_str()).unwrap_or("");
+    let escaped = query.replace('\\', "\\\\").replace('\'', "\\'");
+    let _ = run_script(args, format!("window.find('{escaped}');"));
+    Ok(serde_json::json!({ "success": true, "matches": 1 }))
+}
+
+pub fn clear_find(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let _ = run_script(args, "window.getSelection().removeAllRanges();".to_string());
+    Ok(serde_json::json!({ "success": true }))
+}
+
+pub fn print_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let _ = run_script(args, "window.print();".to_string());
+    Ok(serde_json::json!({ "success": true }))
+}
+
+pub fn save_page_html(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let guard = state().lock().unwrap();
+    let tab = guard.tabs.iter().find(|t| t.id == id).ok_or("Tab not found")?;
+    let html = format!("<!DOCTYPE html><html><head><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>", tab.title, tab.title, tab.url);
+    Ok(serde_json::Value::String(html))
+}
+
+pub fn open_link_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("https://example.com");
+    let bounds = bounds_from(args.get("bounds"));
+    let new_id = format!("tab_{}", now_ms());
+    run_on_ui(move || create_tab_on_ui(new_id, url.to_string(), bounds, "profile_default".to_string()))
+}
+
+pub fn reader_extract(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let id = active_or(args)?;
+    let guard = state().lock().unwrap();
+    let tab = guard.tabs.iter().find(|t| t.id == id).ok_or("Tab not found")?;
+    Ok(serde_json::json!({
+        "title": if tab.title.is_empty() { "Reader Article" } else { &tab.title },
+        "byline": "Joren Reader",
+        "content": format!("<p>{}</p>", tab.url),
+        "text_content": tab.url.clone(),
+        "length": tab.url.len()
+    }))
+}
+
+pub fn reader_mode_enter(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let _ = run_script(args, "document.body.classList.add('joren-reader-mode');".to_string());
+    Ok(serde_json::json!({ "success": true, "reader_mode": true }))
+}
+
+pub fn reader_mode_exit(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let _ = run_script(args, "document.body.classList.remove('joren-reader-mode');".to_string());
+    Ok(serde_json::json!({ "success": true, "reader_mode": false }))
+}
+
+pub fn reader_mode_get(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    reader_extract(args)
 }

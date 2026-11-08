@@ -18,6 +18,7 @@ impl JorenCefApp {
         base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
         base.on_before_command_line_processing = Some(Self::on_before_command_line_processing);
         base.on_register_custom_schemes = Some(Self::on_register_custom_schemes);
+        base.get_browser_process_handler = Some(Self::get_browser_process_handler);
 
         let app = Box::new(Self {
             base,
@@ -98,5 +99,89 @@ impl JorenCefApp {
                 &format!("Custom scheme 'joren' registered in on_register_custom_schemes (result={})", res),
             );
         }
+    }
+
+    unsafe extern "C" fn get_browser_process_handler(
+        _self: *mut _cef_app_t,
+    ) -> *mut _cef_browser_process_handler_t {
+        static HANDLER: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let ptr = *HANDLER.get_or_init(|| {
+            JorenBrowserProcessHandler::new() as usize
+        }) as *mut _cef_browser_process_handler_t;
+        if let Some(h) = ptr.as_ref() {
+            if let Some(add_ref) = h.base.add_ref {
+                add_ref(&mut (*ptr).base);
+            }
+        }
+        ptr
+    }
+}
+
+#[repr(C)]
+pub struct JorenBrowserProcessHandler {
+    pub base: _cef_browser_process_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenBrowserProcessHandler {
+    pub fn new() -> *mut _cef_browser_process_handler_t {
+        let mut base: _cef_browser_process_handler_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_browser_process_handler_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_already_running_app_relaunch = Some(Self::on_already_running_app_relaunch);
+
+        let handler = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(handler) as *mut _cef_browser_process_handler_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_already_running_app_relaunch(
+        _self: *mut _cef_browser_process_handler_t,
+        _command_line: *mut _cef_command_line_t,
+        _current_directory: *const cef_string_t,
+    ) -> c_int {
+        crate::cef::log_startup("RELAUNCH", "Relaunch callback invoked by CEF for second instance. Bringing host window to foreground.");
+        #[cfg(target_os = "windows")]
+        {
+            let hwnd = crate::cef::host_hwnd();
+            if hwnd != 0 {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SetForegroundWindow, SW_RESTORE};
+                ShowWindow(hwnd as *mut _, SW_RESTORE);
+                SetForegroundWindow(hwnd as *mut _);
+            }
+        }
+        1 // 1 = Handled
     }
 }
