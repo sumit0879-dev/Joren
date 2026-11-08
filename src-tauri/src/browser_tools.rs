@@ -2440,8 +2440,6 @@ async fn execute_browser_tool_internal(
                 }),
             }
         }
-            }
-        }
 
         // --- Phase 5.6F-C: Tab Groups Tool Execution ---
         "browser_tab_groups_list" => {
