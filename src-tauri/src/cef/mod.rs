@@ -137,7 +137,10 @@ pub fn set_main_view_hwnd(hwnd: isize) {
 
 pub fn set_main_browser(browser: *mut _cef_browser_t) {
     let mut guard = MAIN_BROWSER.lock().unwrap();
-    *guard = Some(browser as usize);
+    if guard.is_none() {
+        *guard = Some(browser as usize);
+        log_startup("BROWSER", &format!("Main browser registered: {:#x}", browser as usize));
+    }
 }
 
 pub fn clear_main_browser() {
@@ -341,11 +344,18 @@ impl JorenLifeSpanHandler {
         browser: *mut _cef_browser_t,
     ) {
         let is_tab = tabs::note_closed(browser);
-        if !is_tab {
+        let ptr = browser as usize;
+        let is_main = {
+            let guard = MAIN_BROWSER.lock().unwrap();
+            *guard == Some(ptr)
+        };
+        if is_main {
             log_startup("BROWSER", "Main application browser window is closing.");
             clear_main_browser();
-        } else {
+        } else if is_tab {
             log_startup("BROWSER", "Website tab browser closed.");
+        } else {
+            log_startup("BROWSER", "Auxiliary browser closed.");
         }
     }
 }

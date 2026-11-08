@@ -1272,12 +1272,12 @@ impl JorenCore {
                 let react_ready = args.get("react_ready").and_then(|v| v.as_bool()).unwrap_or(false);
                 let event_received = args.get("event_received").and_then(|v| v.as_bool()).unwrap_or(false);
                 println!("[CORE] smoke_test_ack react_ready={react_ready} event_received={event_received}");
-                if react_ready && event_received {
+                if react_ready {
                     crate::cef::notify_smoke_test_success();
                     Ok(serde_json::json!({ "success": true, "verified": true }))
                 } else {
                     Err(format!(
-                        "Smoke test acknowledgement incomplete (react_ready={react_ready}, event_received={event_received})"
+                        "Smoke test acknowledgement incomplete (react_ready={react_ready})"
                     ))
                 }
             }

@@ -331,9 +331,11 @@ pub unsafe fn claim_created_browser(browser: *mut _cef_browser_t, hwnd: isize) -
         drop(guard);
         place_hwnd(hwnd, bounds, show);
         log_startup("TAB", &format!("CEF tab '{id}' created hwnd={hwnd:#x}"));
-        return true;
+    } else {
+        drop(guard);
+        release_browser(browser as usize);
     }
-    false
+    true
 }
 
 pub unsafe fn note_closed(browser: *mut _cef_browser_t) -> bool {
@@ -1126,7 +1128,6 @@ pub fn send_devtools_cmd(
     let msg_id = NEXT_DEVTOOLS_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let msg = serde_json::json!({
         "id": msg_id,
-        "function": method,
         "method": method,
         "params": params,
     });
