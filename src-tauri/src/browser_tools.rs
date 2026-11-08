@@ -1865,7 +1865,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'url'.".to_string())?;
 
-            match browser_navigate_tab(app, tab_id.to_string(), url.to_string(), state).await {
+            match engine.navigate(tab_id, url) {
                 Ok(loaded_url) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -2688,16 +2688,12 @@ async fn execute_browser_tool_internal(
                     )
                 });
 
-            match browser_create_tab(app, tab_id.clone(), initial_url, None, None, state).await {
+            match engine.create_tab(Some(&tab_id), initial_url) {
                 Ok(tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab.id.clone()),
-                    data: Some(json!({
-                        "tab_id": tab.id,
-                        "url": tab.url,
-                        "title": tab.title,
-                    })),
+                    tab_id: Some(tab_id),
+                    data: Some(tab),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
