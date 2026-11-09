@@ -51,12 +51,6 @@ const PLUGIN_DEFS: &[PluginDef] = &[
         category: "system",
     },
     PluginDef {
-        id: "dev_agent",
-        name: "Dev Agent (E.D.I.T.H.)",
-        description: "AI coding assistant jo project files read/write/edit kar sakta hai. DevPanel se access karo.",
-        category: "developer",
-    },
-    PluginDef {
         id: "whatsapp",
         name: "WhatsApp Integration",
         description: "Send WhatsApp messages via deep link. 'whatsapp [number] [message]' bolke trigger hota hai.",

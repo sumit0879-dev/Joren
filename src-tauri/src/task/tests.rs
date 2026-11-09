@@ -45,7 +45,7 @@ mod tests {
         let corr = EventCorrelation::default();
         let task_id = runtime
             .create_task(
-                TaskType::DevAgent,
+                TaskType::Background,
                 "Refactor module",
                 corr,
                 TaskOwner::System,
@@ -186,7 +186,7 @@ mod tests {
             .await;
         let id_c = runtime
             .create_task(
-                TaskType::DevAgent,
+                TaskType::Background,
                 "Task C",
                 EventCorrelation::default(),
                 TaskOwner::User,

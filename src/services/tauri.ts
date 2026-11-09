@@ -9,7 +9,6 @@ import type {
   ProviderModel,
   WeatherResult,
   MemoryChunk,
-  AgentStatus,
   BrowserViewportBounds,
   BrowserInfo,
   BrowserTabInfo,
@@ -123,38 +122,47 @@ export function listen<T = any>(
   });
 }
 
-// Full catalog of supported hardcoded AI providers and models (Groq and Gemini only)
+// Canonical dynamic AI providers (Zero hardcoded model catalogs; models discovered dynamically via provider endpoints)
 export const DEFAULT_PROVIDERS: ProviderDef[] = [
   {
     id: 'groq',
     name: 'Groq Cloud (Ultra-Fast)',
-    models: [
-      { id: 'llama-3.3-70b-versatile', label: 'Meta LLaMA 3.3 70B Versatile (Recommended)' },
-      { id: 'llama-3.1-8b-instant', label: 'Meta LLaMA 3.1 8B Instant (Ultra-Fast Chat)' },
-      { id: 'openai/gpt-oss-120b', label: 'OpenAI GPT-OSS 120B (High Performance)' },
-      { id: 'openai/gpt-oss-20b', label: 'OpenAI GPT-OSS 20B (Fast & Lightweight)' },
-      { id: 'deepseek-r1-distill-llama-70b', label: 'DeepSeek R1 Distill LLaMA 70B (Reasoning)' },
-      { id: 'qwen/qwen3.6-27b', label: 'Qwen 3.6 27B (Multilingual Reasoning)' },
-      { id: 'qwen-qwq-32b', label: 'Qwen QwQ 32B (Advanced Reasoning)' },
-      { id: 'groq/compound', label: 'Groq Compound Agentic System' },
-      { id: 'groq/compound-mini', label: 'Groq Compound Mini' },
-    ],
+    models: [],
   },
   {
     id: 'gemini',
     name: 'Google Gemini API',
-    models: [
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Analytical & Fast)' },
-      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite (Ultra Lightweight)' },
-      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (Deep Reasoning & Coding)' },
-      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (Next-Gen Multimodal)' },
-      { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite (Cost-Efficient)' },
-      { id: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (High Speed)' },
-      { id: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro (Long Context Window)' },
-      { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash (Frontier Agentic & Coding)' },
-      { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash (Agentic Planning)' },
-      { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro (Frontier Multimodal Intelligence)' },
-    ],
+    models: [],
+  },
+  {
+    id: 'huggingface',
+    name: 'Hugging Face Inference',
+    models: [],
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter AI',
+    models: [],
+  },
+  {
+    id: 'openai',
+    name: 'OpenAI API',
+    models: [],
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek AI',
+    models: [],
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    models: [],
+  },
+  {
+    id: 'ollama',
+    name: 'Ollama Local',
+    models: [],
   },
 ];
 
@@ -192,13 +200,6 @@ export const DEFAULT_PLUGINS: PluginWithState[] = [
     name: 'System Terminal',
     description: "Execute shell commands with output. Type 'cmd [command]' or 'terminal [command]'.",
     category: 'system',
-    enabled: true,
-  },
-  {
-    id: 'dev_agent',
-    name: 'Dev Agent (Joren)',
-    description: 'AI developer assistant that autonomously reads files and runs project commands.',
-    category: 'developer',
     enabled: true,
   },
   {
@@ -467,33 +468,7 @@ export async function localChat(prompt: string, emitEvent?: string): Promise<str
   return await invoke('local_chat', { prompt, emitEvent });
 }
 
-// --- Dev Agent (Joren) ---
-export async function agentStatus(): Promise<AgentStatus> {
-  if (!isTauri()) return { is_ready: true, project_path: 'E:\\Projects\\E.D.I.T.H' };
-  try {
-    return await invoke('agent_status');
-  } catch {
-    return { is_ready: false, project_path: '' };
-  }
-}
-
-export async function agentSetPath(path: string): Promise<void> {
-  if (!isTauri()) return;
-  return await invoke('agent_set_path', { path });
-}
-
-export async function agentReset(): Promise<void> {
-  if (!isTauri()) return;
-  return await invoke('agent_reset');
-}
-
-export async function agentChat(message: string, sessionId?: string): Promise<string> {
-  if (!isTauri()) {
-    return 'Dev Agent (Joren) analyzed the workspace: Code structure is verified and all modules are ready.';
-  }
-  return await invoke('agent_chat', { message, sessionId });
-}
-
+// --- Security Approvals ---
 export interface CommandProposalPayload {
   proposal_id: string;
   session_id: string;
@@ -501,21 +476,6 @@ export interface CommandProposalPayload {
   working_dir: string;
   risk_level: string;
   expires_at: number;
-}
-
-export async function agentResolveProposal(
-  proposalId: string,
-  action: 'Approve' | 'Reject',
-  sessionId?: string
-): Promise<{ success: boolean; output: string; error?: string; execution_time_ms: number }> {
-  if (!isTauri()) {
-    return { success: true, output: `[Mock Proposal ${action}] Execution completed.`, execution_time_ms: 50 };
-  }
-  return await invoke('agent_resolve_proposal', {
-    proposalId,
-    sessionId: sessionId || null,
-    action,
-  });
 }
 
 export async function onToolProposal(callback: (proposal: CommandProposalPayload) => void): Promise<UnlistenFn> {
@@ -920,6 +880,19 @@ export async function onChatChunk(callback: (chunk: string) => void): Promise<Un
   }
 }
 
+export async function onNavigateView(callback: (view: string) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  try {
+    return await listen<{ view: string }>('joren-navigate-view', (event) => {
+      if (event.payload?.view) {
+        callback(event.payload.view);
+      }
+    });
+  } catch {
+    return () => {};
+  }
+}
+
 export async function onModelProgress(callback: (msg: string) => void): Promise<UnlistenFn> {
   if (!isTauri()) return () => {};
   try {
@@ -1006,6 +979,11 @@ export async function browserGetMultiState(): Promise<BrowserMultiStateInfo> {
 export async function browserSetBoundsAll(bounds: BrowserViewportBounds): Promise<void> {
   if (!isTauri()) return;
   return await invoke('browser_set_bounds_all', { bounds });
+}
+
+export async function browserSetClippingRegion(cutouts: Array<{ x: number; y: number; width: number; height: number }>): Promise<void> {
+  if (!isTauri()) return;
+  return await invoke('browser_set_clipping_region', { cutouts });
 }
 
 export async function browserHideAll(): Promise<void> {

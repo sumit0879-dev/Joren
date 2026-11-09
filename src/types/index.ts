@@ -282,8 +282,6 @@ export interface BrowserInfo {
 export type ViewTab = 
   | 'chat' 
   | 'browser'
-  | 'dev_agent' 
-  | 'memory_bank' 
   | 'plugins' 
   | 'settings';
 

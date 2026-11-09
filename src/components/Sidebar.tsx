@@ -3,8 +3,7 @@ import { useApp } from '../context/AppContext';
 import type { ViewTab } from '../types';
 import {
   MessageSquare,
-  Bot,
-  Brain,
+  Globe,
   Puzzle,
   Settings,
   Activity,
@@ -30,19 +29,11 @@ const tabs: TabItem[] = [
     glow: 'from-cyan-500/20 to-blue-500/10',
   },
   {
-    id: 'dev_agent',
-    label: 'Dev Agent',
-    sublabel: 'File & Terminal AI',
-    icon: Bot,
-    badge: 'JOREN',
-    glow: 'from-violet-500/20 to-purple-500/10',
-  },
-  {
-    id: 'memory_bank',
-    label: 'Memory Bank',
-    sublabel: 'LanceDB Semantic Vectors',
-    icon: Brain,
-    glow: 'from-amber-500/20 to-yellow-500/10',
+    id: 'browser',
+    label: 'Joren Browser',
+    sublabel: 'CEF Chromium Engine',
+    icon: Globe,
+    glow: 'from-emerald-500/20 to-teal-500/10',
   },
   {
     id: 'plugins',

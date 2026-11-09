@@ -4,8 +4,6 @@ import type { ViewTab } from '../types';
 import {
   MessageSquare,
   Globe,
-  Terminal,
-  Database,
   Cpu,
   Sliders,
   Shield,
@@ -22,11 +20,9 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { id: 'chat', label: 'Tactical AI Chat', sublabel: 'Joren Core', icon: MessageSquare, shortcut: 'Alt+1' },
-  { id: 'browser', label: 'Joren Browser', sublabel: 'WebView2 Engine', icon: Globe, badge: 'FEASIBILITY', shortcut: 'Alt+2' },
-  { id: 'dev_agent', label: 'Joren Dev Agent', sublabel: 'Autonomous Coder', icon: Terminal, badge: 'AGENT', shortcut: 'Alt+3' },
-  { id: 'memory_bank', label: 'Vector Memory', sublabel: 'LanceDB RAG Bank', icon: Database, shortcut: 'Alt+4' },
-  { id: 'plugins', label: 'Cyber Tools', sublabel: 'System & Web Tools', icon: Cpu, shortcut: 'Alt+5' },
-  { id: 'settings', label: 'Config Suite', sublabel: 'Models & Endpoints', icon: Sliders, shortcut: 'Alt+6' },
+  { id: 'browser', label: 'Joren Browser', sublabel: 'Chromium Engine', icon: Globe, badge: 'CEF', shortcut: 'Alt+2' },
+  { id: 'plugins', label: 'Cyber Tools', sublabel: 'System & Web Tools', icon: Cpu, shortcut: 'Alt+3' },
+  { id: 'settings', label: 'Config Suite', sublabel: 'Models & Endpoints', icon: Sliders, shortcut: 'Alt+4' },
 ];
 
 export const TacticalNavRail: React.FC = () => {

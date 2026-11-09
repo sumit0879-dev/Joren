@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 pub enum TaskType {
     Background,
     BrowserAgent,
-    DevAgent,
     Maintenance,
     Custom(String),
 }
@@ -17,7 +16,6 @@ impl std::fmt::Display for TaskType {
         match self {
             TaskType::Background => write!(f, "background"),
             TaskType::BrowserAgent => write!(f, "browser_agent"),
-            TaskType::DevAgent => write!(f, "dev_agent"),
             TaskType::Maintenance => write!(f, "maintenance"),
             TaskType::Custom(name) => write!(f, "custom:{}", name),
         }

@@ -2,7 +2,6 @@ use crate::ai::CredentialStore;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use tauri::Manager;
-pub mod agent;
 pub mod ai;
 pub mod browser;
 pub mod browser_agent;
@@ -81,16 +80,6 @@ pub async fn transcribe_audio(
     }
 
     Err("No Groq or OpenAI API key configured. Please set an API key in Settings -> Models & Providers for speech recognition.".to_string())
-}
-
-#[tauri::command]
-pub fn agent_resolve_proposal(
-    proposal_id: String,
-    session_id: Option<String>,
-    action: String,
-) -> Result<security::CommandPolicyResult, String> {
-    let sess = session_id.unwrap_or_default();
-    security::ProposalEngine::resolve_proposal(&proposal_id, &sess, &action)
 }
 
 #[tauri::command]
@@ -361,7 +350,6 @@ pub async fn task_create(
     let t_type = match task_type.to_lowercase().as_str() {
         "background" => task::TaskType::Background,
         "browser_agent" => task::TaskType::BrowserAgent,
-        "dev_agent" => task::TaskType::DevAgent,
         "maintenance" => task::TaskType::Maintenance,
         other => task::TaskType::Custom(other.to_string()),
     };
@@ -765,11 +753,6 @@ pub fn run() {
             browser::browser_tab_group_reorder,
             browser::browser_tab_group_close_tabs,
             browser_recovery::browser_run_startup_recovery,
-            agent::agent_status,
-            agent::agent_chat,
-            agent::agent_set_path,
-            agent::agent_reset,
-            agent_resolve_proposal,
             get_base_dir,
             get_all_settings,
             save_setting,
@@ -854,5 +837,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|_app_handle, _event| {});
+    app.run(|_app_handle, event| {
+        #[cfg(target_os = "windows")]
+        if let tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::CloseRequested { .. }, .. } = event {
+            crate::llm::stop_local_llm_sync();
+        }
+    });
 }

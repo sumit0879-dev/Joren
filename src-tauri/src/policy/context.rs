@@ -13,8 +13,6 @@ pub enum ActionSource {
     AutonomousAgent,
     /// Action initiated from an asynchronous background task
     BackgroundTask,
-    /// Action initiated by the developer agent
-    DevAgent,
     /// Action initiated by the autonomous browser agent
     BrowserAgent,
     /// Action initiated by automated test runner
