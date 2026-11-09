@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import * as tauriService from '../services/tauri';
 import * as conversationService from '../services/conversationService';
+import { browserController } from '../services/browserController';
 import type { Message } from '../types';
 import { CodeBlock } from '../components/CodeBlock';
 import { ArcReactor } from '../components/ArcReactor';
@@ -45,6 +46,7 @@ export const ChatView: React.FC = () => {
     isSpeaking,
     isRecording,
     toggleRecording,
+    setActiveTab,
   } = useApp();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -226,8 +228,6 @@ export const ChatView: React.FC = () => {
     currentTurnIdRef.current = assistantMsgId;
 
     try {
-      await tauriService.saveSessionMessage(targetSessionId, 'user', text.trim(), timestamp);
-
       let responseText = '';
       let responseType = 'text';
 
@@ -260,11 +260,14 @@ export const ChatView: React.FC = () => {
           settings
         );
       } catch (convErr: any) {
-        // Fallback to chatCommand for legacy compatibility
+        // Fallback to chatCommand for legacy compatibility only when submitConversationTurn fails
         const historyItems = messages.map((m) => ({
           role: m.role,
           text: m.text || m.content || '',
         }));
+
+        // In legacy fallback path only, save user message
+        await tauriService.saveSessionMessage(targetSessionId, 'user', text.trim(), timestamp);
 
         const res = await tauriService.chatCommand(
           text.trim(),
@@ -275,6 +278,14 @@ export const ChatView: React.FC = () => {
         );
         responseText = res.response;
         responseType = res.type;
+
+        // In legacy fallback path only, save assistant message
+        await tauriService.saveSessionMessage(
+          targetSessionId,
+          'assistant',
+          responseText,
+          timestamp
+        );
       }
 
       setMessages((prev) =>
@@ -289,13 +300,6 @@ export const ChatView: React.FC = () => {
               }
             : m
         )
-      );
-
-      await tauriService.saveSessionMessage(
-        targetSessionId,
-        'assistant',
-        responseText,
-        timestamp
       );
 
       if (settings.autoSpeak === 'true' && responseText && responseType !== 'error') {
@@ -637,6 +641,27 @@ export const ChatView: React.FC = () => {
                           <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={{
+                              a({ href, children, ...props }: any) {
+                                return (
+                                  <a
+                                    href={href}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      if (href) {
+                                        browserController.createTab(href).catch((err) => {
+                                          console.error('Failed to open link in Joren browser:', err);
+                                        });
+                                        setActiveTab('browser');
+                                      }
+                                    }}
+                                    className="text-cyan-400 hover:text-cyan-300 underline cursor-pointer"
+                                    title={`Open ${href} in Joren Browser`}
+                                    {...props}
+                                  >
+                                    {children}
+                                  </a>
+                                );
+                              },
                               code({ node, className, children, ...props }: any) {
                                 const match = /language-(\w+)/.exec(className || '');
                                 const codeValue = String(children).replace(/\n$/, '');

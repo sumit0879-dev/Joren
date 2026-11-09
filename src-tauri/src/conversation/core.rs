@@ -133,12 +133,14 @@ impl ConversationCore {
                 .lock()
                 .map_err(|e| ConversationError::Internal(e.to_string()))?;
             let timestamp = current_timestamp_str();
-            let _ = crate::db::save_session_message(
+            let user_key = format!("turn_{}_user", req.client_turn_id.as_deref().unwrap_or(turn_id.as_str()));
+            let _ = crate::db::save_session_message_idempotent(
                 &conn,
                 &req.session_id,
                 "user",
                 &trimmed_msg,
                 &timestamp,
+                Some(&user_key),
             );
         }
 
@@ -585,12 +587,14 @@ impl ConversationCore {
         if let Some(ref db_conn) = self.db_conn {
             if let Ok(conn) = db_conn.lock() {
                 let timestamp = current_timestamp_str();
-                let _ = crate::db::save_session_message(
+                let assistant_key = format!("turn_{}_assistant", turn_id.as_str());
+                let _ = crate::db::save_session_message_idempotent(
                     &conn,
                     &session_id,
                     "assistant",
                     &final_text,
                     &timestamp,
+                    Some(&assistant_key),
                 );
             }
         }
@@ -742,12 +746,14 @@ impl ConversationCore {
             if let Some(ref db_conn) = self.db_conn {
                 if let Ok(conn) = db_conn.lock() {
                     let timestamp = current_timestamp_str();
-                    let _ = crate::db::save_session_message(
+                    let v_user_key = format!("voice_{}_user", turn_id.as_str());
+                    let _ = crate::db::save_session_message_idempotent(
                         &conn,
                         &session_id,
                         "user",
                         &user_text,
                         &timestamp,
+                        Some(&v_user_key),
                     );
                 }
             }
@@ -758,13 +764,15 @@ impl ConversationCore {
             if let Some(ref db_conn) = self.db_conn {
                 if let Ok(conn) = db_conn.lock() {
                     let timestamp = current_timestamp_str();
-                    let _ = crate::db::save_session_message(
+                    let v_ast_key = format!("voice_{}_assistant", turn_id.as_str());
+                    let _ = crate::db::save_session_message_idempotent(
                         &conn,
                         &session_id,
                         "assistant",
                         &assistant_text,
                         &timestamp,
-                    );
+                        Some(&v_ast_key),
+                        );
                 }
             }
         }

@@ -313,15 +313,21 @@ pub async fn load_local_llm(
     Ok(())
 }
 
+/// Kill the llama-server.exe subprocess synchronously
+pub fn stop_local_llm_sync() {
+    if let Ok(mut guard) = LOCAL_SERVER_PROCESS.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            println!("RUST: Local llama-server process terminated cleanly.");
+        }
+    }
+}
+
 /// Kill the llama-server.exe subprocess
 #[tauri::command]
 pub async fn stop_local_llm() -> Result<(), String> {
-    let mut guard = LOCAL_SERVER_PROCESS.lock().unwrap();
-    if let Some(mut child) = guard.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-        println!("RUST: Local server killed.");
-    }
+    stop_local_llm_sync();
     Ok(())
 }
 

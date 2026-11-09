@@ -129,6 +129,21 @@ impl ContextAssembler {
     ) -> String {
         let mut sys = self.build_system_prompt(memory_items);
 
+        let version = env!("CARGO_PKG_VERSION");
+        let os = std::env::consts::OS;
+        let arch = std::env::consts::ARCH;
+
+        sys.push_str(&format!(
+            "\n\n[Runtime Self-Knowledge & Architecture]:\n\
+            - Application: Joren (v{})\n\
+            - Host Platform: {} ({})\n\
+            - Browser Engine: CEF Chromium embedded runtime\n\
+            - Storage: Local SQLite database + LanceDB semantic vector store (fully offline)\n\
+            - Programmatic Self-Control: You have built-in programmatic tools to control the application internally without moving the user's mouse cursor (`joren.navigate_view`, `joren.open_browser_url`, `joren.switch_browser_tab`, `joren.get_runtime_status`, `joren.get_capabilities`). When the user asks you to open a website, switch to the browser, or navigate views, use these tools directly.\n\
+            - Transparency: Local database and vector storage are 100% offline. Local GGUF inference via llama-server is offline; external cloud providers and web browsing require network access.",
+            version, os, arch
+        ));
+
         if let (Some(prov), Some(model)) = (provider_id, model_id) {
             sys.push_str(&format!(
                 "\n\n[Runtime Identity Grounding]: You are executing on provider '{}' with model '{}'. When asked about your model, architecture, or provider, state this accurately.",
@@ -171,9 +186,19 @@ impl ContextAssembler {
         let mut messages = Vec::with_capacity(history.len() + 2);
         messages.push(ChatMessage::system(system_prompt));
 
-        for msg in history {
+        let last_is_current_user = history
+            .last()
+            .map(|m| m.role == "user" && m.content.trim() == current_input.trim())
+            .unwrap_or(false);
+
+        for (idx, msg) in history.iter().enumerate() {
             // Do not duplicate system prompts from history
             if msg.role != "system" {
+                // If history already contains the current turn's user message as the latest item,
+                // skip it here so it is not duplicated when current_input is pushed at the end.
+                if idx == history.len() - 1 && last_is_current_user {
+                    continue;
+                }
                 messages.push(msg.clone());
             }
         }

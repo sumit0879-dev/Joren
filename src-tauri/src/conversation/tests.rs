@@ -268,6 +268,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_context_assembler_deduplicates_current_input() {
+        let memory = Arc::new(RwLock::new(MockMemoryStore::default()));
+        let assembler = ContextAssembler::new(
+            "Stark AI directive: Assist Tony Stark at all times.",
+            memory,
+        );
+
+        // History where the last entry is already the current user message (e.g. from submit_turn)
+        let history = vec![
+            ChatMessage::user("Initial prompt"),
+            ChatMessage::assistant("Initial response"),
+            ChatMessage::user("Optimize power"),
+        ];
+
+        let assembled = assembler
+            .assemble_messages(&history, "Optimize power")
+            .await;
+
+        // Count how many times "Optimize power" appears
+        let user_prompts: Vec<_> = assembled
+            .iter()
+            .filter(|m| m.role == "user" && m.content == "Optimize power")
+            .collect();
+
+        assert_eq!(user_prompts.len(), 1, "Assembled context must contain exactly one copy of the current prompt");
+        assert_eq!(assembled.last().unwrap().role, "user");
+        assert_eq!(assembled.last().unwrap().content, "Optimize power");
+    }
+
+    #[tokio::test]
     async fn test_provider_routing_and_streaming_correlation() {
         let mut registry = ProviderRegistry::new();
         registry.register(Arc::new(MockStreamingProvider::new(

@@ -20,6 +20,7 @@ pub struct Message {
     pub time: Option<String>,
     pub created_at: Option<String>,
     pub session_id: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -207,6 +208,24 @@ pub fn init_db_at(db_path: &PathBuf) -> Result<Connection> {
     if let Some(parent) = db_path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent).unwrap_or(());
+        }
+    }
+
+    // Task 1.1: Database backup before applying migrations if file exists
+    if db_path.exists() {
+        if let Some(parent) = db_path.parent() {
+            let backups_dir = parent.join("backups");
+            let _ = fs::create_dir_all(&backups_dir);
+            let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+            let backup_path = backups_dir.join(format!("joren.db.backup.{}.bak", timestamp));
+            match fs::copy(db_path, &backup_path) {
+                Ok(bytes) => {
+                    println!("[BACKUP] Created verified database backup at {:?} ({} bytes)", backup_path, bytes);
+                }
+                Err(e) => {
+                    eprintln!("[BACKUP] Warning: failed to create database backup: {}", e);
+                }
+            }
         }
     }
 
@@ -415,6 +434,50 @@ pub fn init_db_at(db_path: &PathBuf) -> Result<Connection> {
     // Phase 5.6F-C: Non-destructive migration for tab group association
     let _ = conn.execute("ALTER TABLE browser_tabs ADD COLUMN group_id TEXT;", []);
 
+    // Phase 1 / Task 1.1: Idempotency migration and unique index for messages
+    let has_idempotency_col: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'idempotency_key'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false);
+
+    if !has_idempotency_col {
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN idempotency_key TEXT;", []);
+    }
+
+    let _ = conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idempotency ON messages(session_id, idempotency_key) WHERE idempotency_key IS NOT NULL;",
+        [],
+    );
+
+    // Non-destructive startup duplicate audit
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT session_id, role, text, COUNT(*) as cnt FROM messages GROUP BY session_id, role, text HAVING cnt > 1",
+    ) {
+        let duplicate_groups = stmt
+            .query_map([], |row| {
+                let session_id: String = row.get(0)?;
+                let role: String = row.get(1)?;
+                let text: String = row.get(2)?;
+                let cnt: i64 = row.get(3)?;
+                Ok((session_id, role, text, cnt))
+            })
+            .map(|rows| rows.filter_map(Result::ok).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if !duplicate_groups.is_empty() {
+            let total_excess: i64 = duplicate_groups.iter().map(|(_, _, _, c)| c - 1).sum();
+            println!(
+                "[DB AUDIT] Found {} candidate duplicate message groups ({} total repeated rows) in historical data. Preserving historical messages without automated deletion.",
+                duplicate_groups.len(),
+                total_excess
+            );
+        }
+    }
+
     Ok(conn)
 }
 
@@ -602,16 +665,34 @@ pub fn save_session_message(
     text: &str,
     time: &str,
 ) -> Result<()> {
-    conn.execute(
-        "INSERT INTO messages (session_id, role, text, time) VALUES (?1, ?2, ?3, ?4)",
-        params![session_id, role, text, time],
-    )?;
+    save_session_message_idempotent(conn, session_id, role, text, time, None)
+}
+
+pub fn save_session_message_idempotent(
+    conn: &Connection,
+    session_id: &str,
+    role: &str,
+    text: &str,
+    time: &str,
+    idempotency_key: Option<&str>,
+) -> Result<()> {
+    if let Some(key) = idempotency_key {
+        conn.execute(
+            "INSERT INTO messages (session_id, role, text, time, idempotency_key) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(session_id, idempotency_key) DO NOTHING;",
+            params![session_id, role, text, time, key],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO messages (session_id, role, text, time) VALUES (?1, ?2, ?3, ?4);",
+            params![session_id, role, text, time],
+        )?;
+    }
     Ok(())
 }
 
 pub fn get_session_messages(conn: &Connection, session_id: &str) -> Result<Vec<Message>> {
     let mut stmt = conn
-        .prepare("SELECT id, role, text, time FROM messages WHERE session_id=?1 ORDER BY id ASC")?;
+        .prepare("SELECT id, role, text, time, idempotency_key FROM messages WHERE session_id=?1 ORDER BY id ASC")?;
     let rows = stmt.query_map(params![session_id], |row| {
         let text: String = row.get(2)?;
         Ok(Message {
@@ -622,6 +703,7 @@ pub fn get_session_messages(conn: &Connection, session_id: &str) -> Result<Vec<M
             time: row.get::<_, String>(3).ok(),
             created_at: row.get::<_, String>(3).ok(),
             session_id: Some(session_id.to_string()),
+            idempotency_key: row.get::<_, Option<String>>(4).unwrap_or(None),
         })
     })?;
 
@@ -1869,6 +1951,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&legacy_dir);
         let _ = std::fs::remove_file(&target_db_path);
         let _ = std::fs::remove_dir_all(&target_dir);
+    }
+
+    #[test]
+    fn test_chat_idempotency_and_backup() {
+        let temp = TempDb::new();
+        let conn = init_db_at(&temp.path).expect("init_db_at failed");
+
+        // Insert first message with idempotency key
+        let res1 = save_session_message_idempotent(
+            &conn,
+            "sess_test_1",
+            "user",
+            "Hello world",
+            "1700000000",
+            Some("key_turn_1_user"),
+        );
+        assert!(res1.is_ok());
+
+        // Insert duplicate message with same idempotency key
+        let res2 = save_session_message_idempotent(
+            &conn,
+            "sess_test_1",
+            "user",
+            "Hello world",
+            "1700000001",
+            Some("key_turn_1_user"),
+        );
+        assert!(res2.is_ok());
+
+        // Verify exactly one message exists for this key
+        let msgs = get_session_messages(&conn, "sess_test_1").expect("get_session_messages failed");
+        assert_eq!(msgs.len(), 1, "Duplicate insert with same idempotency key must be ignored");
+        assert_eq!(msgs[0].text, "Hello world");
+        assert_eq!(msgs[0].idempotency_key.as_deref(), Some("key_turn_1_user"));
+
+        // Insert legitimate repeated message with different idempotency key
+        let res3 = save_session_message_idempotent(
+            &conn,
+            "sess_test_1",
+            "user",
+            "Hello world",
+            "1700000002",
+            Some("key_turn_2_user"),
+        );
+        assert!(res3.is_ok());
+        let msgs2 = get_session_messages(&conn, "sess_test_1").expect("get_session_messages failed");
+        assert_eq!(msgs2.len(), 2, "Different idempotency keys must both be preserved");
+
+        // Re-initializing database creates backup
+        let conn2 = init_db_at(&temp.path).expect("re-init_db_at failed");
+        let parent = temp.path.parent().unwrap();
+        let backups_dir = parent.join("backups");
+        assert!(backups_dir.exists(), "Backups directory should be created");
     }
 }
 
