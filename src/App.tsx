@@ -8,11 +8,10 @@ import { ApprovalModal } from './components/ApprovalModal';
 
 import { ChatView } from './views/ChatView';
 import { BrowserView } from './views/BrowserView';
-import { DevAgentView } from './views/DevAgentView';
-import { MemoryBankView } from './views/MemoryBankView';
 import { PluginsView } from './views/PluginsView';
 import { SettingsView } from './views/SettingsView';
 import { browserController } from './services/browserController';
+import { onNavigateView } from './services/tauri';
 
 const MainLayout: React.FC = () => {
   const { activeTab, setActiveTab, isTelemetryOpen, toggleTelemetry } = useApp();
@@ -24,6 +23,22 @@ const MainLayout: React.FC = () => {
     console.log('[JOREN] React application mounted and ready (__JOREN_APP_READY__ = true)');
   }, []);
 
+  // Listen to programmatic view navigation events from Joren AI self-control
+  React.useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onNavigateView((view) => {
+      const validViews = ['chat', 'browser', 'plugins', 'settings'];
+      if (validViews.includes(view)) {
+        setActiveTab(view as any);
+      }
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [setActiveTab]);
+
   // Browser WebView Visibility Lifecycle: Ensure native child webviews are hidden when navigating away, and restored when navigating back
   React.useEffect(() => {
     if (activeTab !== 'browser') {
@@ -33,7 +48,7 @@ const MainLayout: React.FC = () => {
     }
   }, [activeTab]);
 
-  // Global Keyboard Shortcuts (Ctrl+B for Telemetry Dock, Alt+1..6 for Tab navigation)
+  // Global Keyboard Shortcuts (Ctrl+B for Telemetry Dock, Alt+1..4 for Tab navigation)
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Toggle Telemetry Dock: Ctrl+B / Cmd+B
@@ -43,15 +58,13 @@ const MainLayout: React.FC = () => {
         return;
       }
 
-      // Quick Tab Switching: Alt+1 through Alt+6
+      // Quick Tab Switching: Alt+1 through Alt+4
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const tabMap: Record<string, typeof activeTab> = {
           '1': 'chat',
           '2': 'browser',
-          '3': 'dev_agent',
-          '4': 'memory_bank',
-          '5': 'plugins',
-          '6': 'settings',
+          '3': 'plugins',
+          '4': 'settings',
         };
         if (tabMap[e.key]) {
           e.preventDefault();
@@ -81,8 +94,6 @@ const MainLayout: React.FC = () => {
         <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative bg-[#000000]">
           {activeTab === 'chat' && <ChatView />}
           {activeTab === 'browser' && <BrowserView />}
-          {activeTab === 'dev_agent' && <DevAgentView />}
-          {activeTab === 'memory_bank' && <MemoryBankView />}
           {activeTab === 'plugins' && <PluginsView />}
           {activeTab === 'settings' && <SettingsView />}
         </main>

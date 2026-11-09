@@ -38,9 +38,6 @@ impl JorenCore {
         app.manage(crate::db::DbState {
             conn: std::sync::Mutex::new(conn),
         });
-        app.manage(crate::agent::AgentState {
-            path: std::sync::Mutex::new(String::new()),
-        });
         app.manage(crate::browser::BrowserState::default());
         app.manage(crate::browser_agent::BrowserAgentManager::default());
 
@@ -67,6 +64,9 @@ impl JorenCore {
             let _ = tool_registry.register(def);
         }
         for def in crate::tools::get_edith_definitions() {
+            let _ = tool_registry.register(def);
+        }
+        for def in crate::tools::get_joren_definitions() {
             let _ = tool_registry.register(def);
         }
 
@@ -129,6 +129,10 @@ impl JorenCore {
             std::sync::Arc::new(runtime_state.clone()),
         ));
         domain_executors_arc.register(edith_executor);
+        let joren_executor = std::sync::Arc::new(crate::tools::JorenDomainExecutor::new(
+            std::sync::Arc::new(runtime_state.clone()),
+        ));
+        domain_executors_arc.register(joren_executor);
 
         // Wire Universal Tool Runtime into authoritative ConversationCore agentic loop
         conversation_core.set_tools(tool_router_arc.clone(), tool_registry_arc.clone());
@@ -418,44 +422,6 @@ impl JorenCore {
                 let sample_rate = args.get("sampleRate").and_then(|v| v.as_u64()).unwrap_or(16000) as u32;
                 let language = args.get("language").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let res = tokio_rt.block_on(crate::transcribe_audio(samples, sample_rate, language, app.state()))?;
-                Ok(serde_json::to_value(res).unwrap())
-            }
-
-            "agent_status" => {
-                let res = tokio_rt.block_on(crate::agent::agent_status(app.state()))?;
-                Ok(serde_json::to_value(res).unwrap())
-            }
-
-            "agent_chat" => {
-                let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let session_id = args.get("sessionId").or_else(|| args.get("session_id")).and_then(|v| v.as_str()).map(|s| s.to_string());
-                let res = tokio_rt.block_on(crate::agent::agent_chat(
-                    app.clone(),
-                    message,
-                    session_id,
-                    app.state(),
-                    app.state(),
-                    app.state(),
-                ))?;
-                Ok(serde_json::to_value(res).unwrap())
-            }
-
-            "agent_set_path" => {
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = tokio_rt.block_on(crate::agent::agent_set_path(path, app.state()))?;
-                Ok(serde_json::to_value(res).unwrap())
-            }
-
-            "agent_reset" => {
-                let res = tokio_rt.block_on(crate::agent::agent_reset(app.state()))?;
-                Ok(serde_json::to_value(res).unwrap())
-            }
-
-            "agent_resolve_proposal" => {
-                let proposal_id = args.get("proposalId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let session_id = args.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let res = crate::agent_resolve_proposal(proposal_id, session_id, action)?;
                 Ok(serde_json::to_value(res).unwrap())
             }
 
@@ -1194,6 +1160,7 @@ impl JorenCore {
             "browser_hide" | "browser_hide_all" => crate::cef::tabs::hide_all(),
             "browser_destroy" => crate::cef::tabs::hide_all(),
             "browser_set_bounds" | "browser_set_bounds_all" => crate::cef::tabs::set_bounds(args),
+            "browser_set_clipping_region" => crate::cef::tabs::set_clipping_region(args),
             "browser_go_back" | "browser_go_back_tab" => crate::cef::tabs::go_back(args),
             "browser_go_forward" | "browser_go_forward_tab" => crate::cef::tabs::go_forward(args),
             "browser_reload" | "browser_reload_tab" => crate::cef::tabs::reload(args),
@@ -1338,11 +1305,6 @@ mod tests {
             "tts_speak",
             "tts_stop",
             "transcribe_audio",
-            "agent_status",
-            "agent_chat",
-            "agent_set_path",
-            "agent_reset",
-            "agent_resolve_proposal",
             "get_builtin_apps",
             "get_plugins",
             "toggle_plugin",
@@ -1447,6 +1409,7 @@ mod tests {
             "browser_destroy",
             "browser_set_bounds",
             "browser_set_bounds_all",
+            "browser_set_clipping_region",
             "browser_go_back",
             "browser_go_back_tab",
             "browser_go_forward",

@@ -14,6 +14,7 @@ use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tauri::Emitter;
 
 /// Returns canonical definitions for all active `joren.*` tools.
 pub fn get_joren_definitions() -> Vec<ToolDefinition> {
@@ -199,6 +200,68 @@ pub fn get_joren_definitions() -> Vec<ToolDefinition> {
             false,
             5000,
         ),
+        // 12. joren.navigate_view (Programmatic App Navigation)
+        ToolDefinition::new(
+            "joren.navigate_view",
+            ToolDomain::Joren,
+            "Switches the active application view (e.g. 'chat', 'browser', 'plugins', 'settings') programmatically without moving the user's mouse cursor.",
+            json!({
+                "type": "object",
+                "required": ["view"],
+                "properties": {
+                    "view": {
+                        "type": "string",
+                        "enum": ["chat", "browser", "plugins", "settings"],
+                        "description": "Destination view screen"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            false,
+            5000,
+        ),
+        // 13. joren.open_browser_url (Programmatic Browser Control)
+        ToolDefinition::new(
+            "joren.open_browser_url",
+            ToolDomain::Joren,
+            "Opens a URL in a Joren browser tab programmatically and switches the UI to the browser view without moving the cursor.",
+            json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The HTTP or HTTPS URL to load"
+                    },
+                    "new_tab": {
+                        "type": "boolean",
+                        "description": "Whether to open in a new tab (default true)"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            false,
+            10000,
+        ),
+        // 14. joren.switch_browser_tab (Programmatic Tab Switching)
+        ToolDefinition::new(
+            "joren.switch_browser_tab",
+            ToolDomain::Joren,
+            "Activates a specific open browser tab by tab_id programmatically and switches to the browser view.",
+            json!({
+                "type": "object",
+                "required": ["tab_id"],
+                "properties": {
+                    "tab_id": {
+                        "type": "string",
+                        "description": "Unique tab ID to switch to"
+                    }
+                },
+                "additionalProperties": false
+            }),
+            false,
+            5000,
+        ),
     ]
 }
 
@@ -246,25 +309,53 @@ impl DomainExecutor for JorenDomainExecutor {
                 // ============================================================
                 // 1. SELF-KNOWLEDGE TOOLS
                 // ============================================================
-                "joren.get_runtime_status" | "edith.get_runtime_status" => {
+                "joren.get_runtime_status" | "edith.get_runtime_status" | "app.get_status" => {
                     let status = state.get_runtime_status(correlation.conversation_id).await;
-                    serde_json::to_value(status).map_err(|e| {
+                    let mut val = serde_json::to_value(status).map_err(|e| {
                         ToolExecutionError::DomainError(format!(
                             "Failed to serialize runtime status: {}",
                             e
                         ))
-                    })
+                    })?;
+                    if let Some(map) = val.as_object_mut() {
+                        map.insert(
+                            "product_identity".to_string(),
+                            json!({
+                                "name": "Joren",
+                                "version": env!("CARGO_PKG_VERSION"),
+                                "platform": std::env::consts::OS,
+                                "arch": std::env::consts::ARCH,
+                                "browser_runtime": "Chromium / CEF 156 Embedded Host",
+                                "storage": "Local SQLite database + LanceDB semantic vectors (100% offline)",
+                                "cloud_network_dependent": ["Groq", "Gemini", "Hugging Face", "OpenRouter", "OpenAI", "DeepSeek", "Together", "Web Navigation"],
+                                "local_offline_capabilities": ["Local SQLite", "LanceDB vector memory", "Local GGUF llama-server inference", "Browser offline files", "Desktop terminal"]
+                            }),
+                        );
+                    }
+                    Ok(val)
                 }
 
                 "joren.get_capabilities" | "edith.get_capabilities" => {
                     let domain_filter = args.get("domain").and_then(|v| v.as_str());
                     let catalog = state.get_capabilities(domain_filter).await;
-                    serde_json::to_value(catalog).map_err(|e| {
+                    let mut val = serde_json::to_value(catalog).map_err(|e| {
                         ToolExecutionError::DomainError(format!(
                             "Failed to serialize capabilities catalog: {}",
                             e
                         ))
-                    })
+                    })?;
+                    if let Some(map) = val.as_object_mut() {
+                        map.insert(
+                            "capability_tiers".to_string(),
+                            json!({
+                                "supported": "All registered tool domains (browser, computer, edith, joren)",
+                                "configured": "Providers with active API keys and local GGUF",
+                                "currently_available": "CEF browser host active, local SQLite connected, LanceDB ready",
+                                "authorized": "Read-only actions pre-authorized in Standard security mode; mutating actions prompt approval"
+                            }),
+                        );
+                    }
+                    Ok(val)
                 }
 
                 "joren.list_active_tasks" | "edith.list_active_tasks" => {
@@ -464,6 +555,99 @@ impl DomainExecutor for JorenDomainExecutor {
                         "cancelled": cancelled,
                         "execution_id": exec_id,
                         "reason": reason
+                    }))
+                }
+
+                // ============================================================
+                // 3. PROGRAMMATIC APP SELF-CONTROL TOOLS
+                // ============================================================
+                "joren.navigate_view" | "app.navigate_view" => {
+                    let view = args
+                        .get("view")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ToolExecutionError::InvalidArguments(
+                                "Missing required argument 'view'.".to_string(),
+                            )
+                        })?;
+
+                    if let Some(app) = state.app_handle() {
+                        let _ = app.emit("joren-navigate-view", view);
+                    }
+
+                    if view == "browser" {
+                        let _ = crate::cef::tabs::show_active(&json!({}));
+                    }
+
+                    Ok(json!({
+                        "success": true,
+                        "view": view,
+                        "message": format!("Successfully navigated to '{}' view.", view)
+                    }))
+                }
+
+                "joren.open_browser_url" | "app.open_browser_url" => {
+                    let url = args
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ToolExecutionError::InvalidArguments(
+                                "Missing required argument 'url'.".to_string(),
+                            )
+                        })?;
+
+                    let create_args = json!({
+                        "url": url,
+                        "activate": true
+                    });
+                    let tab_res = crate::cef::tabs::create_tab(&create_args).map_err(|e| {
+                        ToolExecutionError::DomainError(format!(
+                            "Failed to open URL in browser: {}",
+                            e
+                        ))
+                    })?;
+
+                    if let Some(app) = state.app_handle() {
+                        let _ = app.emit("joren-navigate-view", "browser");
+                    }
+                    let _ = crate::cef::tabs::show_active(&json!({}));
+
+                    Ok(json!({
+                        "success": true,
+                        "url": url,
+                        "tab": tab_res,
+                        "message": format!("Successfully loaded '{}' in Joren Browser.", url)
+                    }))
+                }
+
+                "joren.switch_browser_tab" | "app.switch_browser_tab" => {
+                    let tab_id = args
+                        .get("tab_id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            ToolExecutionError::InvalidArguments(
+                                "Missing required argument 'tab_id'.".to_string(),
+                            )
+                        })?;
+
+                    let switch_args = json!({ "tab_id": tab_id });
+                    let res = crate::cef::tabs::switch_tab(&switch_args).map_err(|e| {
+                        ToolExecutionError::DomainError(format!(
+                            "Failed to switch browser tab: {}",
+                            e
+                        ))
+                    })?;
+
+                    if let Some(app) = state.app_handle() {
+                        let _ = app.emit("joren-navigate-view", "browser");
+                    }
+                    let _ = crate::cef::tabs::show_active(&json!({}));
+
+                    Ok(json!({
+                        "success": true,
+                        "tab_id": tab_id,
+                        "result": res,
+                        "message": format!("Successfully switched to tab '{}'.", tab_id)
                     }))
                 }
 
