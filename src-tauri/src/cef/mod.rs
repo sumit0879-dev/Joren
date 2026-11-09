@@ -408,6 +408,7 @@ impl JorenLoadHandler {
         base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
         base.on_load_end = Some(Self::on_load_end);
         base.on_load_error = Some(Self::on_load_error);
+        base.on_loading_state_change = Some(Self::on_loading_state_change);
 
         let handler = Box::new(Self {
             base,
@@ -444,6 +445,15 @@ impl JorenLoadHandler {
     unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
         let this = (base as *mut Self).as_ref().unwrap();
         if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_loading_state_change(
+        _self: *mut _cef_load_handler_t,
+        _browser: *mut _cef_browser_t,
+        _is_loading: c_int,
+        _can_go_back: c_int,
+        _can_go_forward: c_int,
+    ) {
     }
 
     unsafe extern "C" fn on_load_end(
@@ -692,10 +702,253 @@ impl JorenLoadHandler {
 }
 
 #[repr(C)]
+struct JorenContextMenuHandler {
+    base: _cef_context_menu_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenContextMenuHandler {
+    pub fn new() -> *mut _cef_context_menu_handler_t {
+        let mut base: _cef_context_menu_handler_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_context_menu_handler_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_before_context_menu = Some(Self::on_before_context_menu);
+        base.on_context_menu_command = Some(Self::on_context_menu_command);
+
+        let handler = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(handler) as *mut _cef_context_menu_handler_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_before_context_menu(
+        _self: *mut _cef_context_menu_handler_t,
+        browser: *mut _cef_browser_t,
+        _frame: *mut _cef_frame_t,
+        params: *mut _cef_context_menu_params_t,
+        model: *mut _cef_menu_model_t,
+    ) {
+        if browser.is_null() || model.is_null() || params.is_null() {
+            return;
+        }
+
+        let main_ptr = MAIN_BROWSER.lock().unwrap().unwrap_or(0);
+        let is_main = main_ptr != 0 && browser as usize == main_ptr;
+
+        if is_main {
+            // Clear default web menu items (Back, Reload, Inspect, View Source, etc.) in app shell
+            if let Some(clear) = (*model).clear {
+                clear(model);
+            }
+
+            let is_editable = (*params).is_editable.map(|f| f(params) != 0).unwrap_or(false);
+            if is_editable {
+                if let Some(add_item) = (*model).add_item {
+                    let s_undo = cef_string_from_str("Undo");
+                    add_item(model, 110, &s_undo);
+                    let s_redo = cef_string_from_str("Redo");
+                    add_item(model, 111, &s_redo);
+                    if let Some(sep) = (*model).add_separator {
+                        sep(model);
+                    }
+                    let s_cut = cef_string_from_str("Cut");
+                    add_item(model, 112, &s_cut);
+                    let s_copy = cef_string_from_str("Copy");
+                    add_item(model, 113, &s_copy);
+                    let s_paste = cef_string_from_str("Paste");
+                    add_item(model, 114, &s_paste);
+                    let s_del = cef_string_from_str("Delete");
+                    add_item(model, 116, &s_del);
+                    if let Some(sep) = (*model).add_separator {
+                        sep(model);
+                    }
+                    let s_sel = cef_string_from_str("Select All");
+                    add_item(model, 117, &s_sel);
+                }
+            } else {
+                let sel_len = if let Some(get_text) = (*params).get_selection_text {
+                    let text = get_text(params);
+                    let s = cef_string_userfree_to_string_and_free(text);
+                    s.len()
+                } else {
+                    0
+                };
+                if sel_len > 0 {
+                    if let Some(add_item) = (*model).add_item {
+                        let s_copy = cef_string_from_str("Copy");
+                        add_item(model, 113, &s_copy);
+                    }
+                }
+            }
+        }
+    }
+
+    unsafe extern "C" fn on_context_menu_command(
+        _self: *mut _cef_context_menu_handler_t,
+        _browser: *mut _cef_browser_t,
+        frame: *mut _cef_frame_t,
+        _params: *mut _cef_context_menu_params_t,
+        command_id: c_int,
+        _event_flags: cef_event_flags_t,
+    ) -> c_int {
+        if frame.is_null() {
+            return 0;
+        }
+        match command_id {
+            110 => {
+                if let Some(f) = (*frame).undo { f(frame); }
+                1
+            }
+            111 => {
+                if let Some(f) = (*frame).redo { f(frame); }
+                1
+            }
+            112 => {
+                if let Some(f) = (*frame).cut { f(frame); }
+                1
+            }
+            113 => {
+                if let Some(f) = (*frame).copy { f(frame); }
+                1
+            }
+            114 => {
+                if let Some(f) = (*frame).paste { f(frame); }
+                1
+            }
+            116 => {
+                if let Some(f) = (*frame).del { f(frame); }
+                1
+            }
+            117 => {
+                if let Some(f) = (*frame).select_all { f(frame); }
+                1
+            }
+            _ => 0,
+        }
+    }
+}
+
+#[repr(C)]
+struct JorenRequestHandler {
+    base: _cef_request_handler_t,
+    ref_count: std::sync::atomic::AtomicI32,
+}
+
+impl JorenRequestHandler {
+    pub fn new() -> *mut _cef_request_handler_t {
+        let mut base: _cef_request_handler_t = unsafe { std::mem::zeroed() };
+        base.base.size = std::mem::size_of::<_cef_request_handler_t>();
+        base.base.add_ref = Some(Self::add_ref);
+        base.base.release = Some(Self::release);
+        base.base.has_one_ref = Some(Self::has_one_ref);
+        base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
+        base.on_before_browse = Some(Self::on_before_browse);
+
+        let handler = Box::new(Self {
+            base,
+            ref_count: std::sync::atomic::AtomicI32::new(1),
+        });
+        Box::into_raw(handler) as *mut _cef_request_handler_t
+    }
+
+    unsafe extern "C" fn add_ref(base: *mut _cef_base_ref_counted_t) {
+        let this = (base as *mut Self).as_ref().unwrap();
+        this.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe extern "C" fn release(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        let prev = this.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+            let _ = Box::from_raw(base as *mut Self);
+            1
+        } else {
+            0
+        }
+    }
+
+    unsafe extern "C" fn has_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) == 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn has_at_least_one_ref(base: *mut _cef_base_ref_counted_t) -> c_int {
+        let this = (base as *mut Self).as_ref().unwrap();
+        if this.ref_count.load(std::sync::atomic::Ordering::Relaxed) >= 1 { 1 } else { 0 }
+    }
+
+    unsafe extern "C" fn on_before_browse(
+        _self: *mut _cef_request_handler_t,
+        browser: *mut _cef_browser_t,
+        _frame: *mut _cef_frame_t,
+        request: *mut _cef_request_t,
+        _user_gesture: c_int,
+        _is_redirect: c_int,
+    ) -> c_int {
+        if browser.is_null() || request.is_null() {
+            return 0;
+        }
+
+        let main_ptr = MAIN_BROWSER.lock().unwrap().unwrap_or(0);
+        let is_main = main_ptr != 0 && browser as usize == main_ptr;
+
+        if is_main {
+            let target_url = if let Some(get_url) = (*request).get_url {
+                let raw = get_url(request);
+                cef_string_userfree_to_string_and_free(raw)
+            } else {
+                String::new()
+            };
+
+            if !target_url.is_empty() && !target_url.starts_with("joren://app") && !target_url.starts_with("devtools://") {
+                log_startup("NAV_GUARD", &format!("Redirecting main shell navigation to child tab: {}", target_url));
+                let _ = tabs::create_tab(&serde_json::json!({ "url": target_url }));
+                return 1;
+            }
+        }
+        0
+    }
+}
+
+#[repr(C)]
 pub struct JorenCefClient {
     pub base: _cef_client_t,
     pub life_span: *mut _cef_life_span_handler_t,
     pub load: *mut _cef_load_handler_t,
+    pub context_menu: *mut _cef_context_menu_handler_t,
+    pub request: *mut _cef_request_handler_t,
     ref_count: std::sync::atomic::AtomicI32,
 }
 
@@ -703,6 +956,8 @@ impl JorenCefClient {
     pub fn new() -> *mut _cef_client_t {
         let life_span = JorenLifeSpanHandler::new();
         let load = JorenLoadHandler::new();
+        let context_menu = JorenContextMenuHandler::new();
+        let request = JorenRequestHandler::new();
         let mut base: _cef_client_t = unsafe { std::mem::zeroed() };
         base.base.size = std::mem::size_of::<_cef_client_t>();
         base.base.add_ref = Some(Self::add_ref);
@@ -711,11 +966,15 @@ impl JorenCefClient {
         base.base.has_at_least_one_ref = Some(Self::has_at_least_one_ref);
         base.get_life_span_handler = Some(Self::get_life_span_handler);
         base.get_load_handler = Some(Self::get_load_handler);
+        base.get_context_menu_handler = Some(Self::get_context_menu_handler);
+        base.get_request_handler = Some(Self::get_request_handler);
 
         let client = Box::new(Self {
             base,
             life_span,
             load,
+            context_menu,
+            request,
             ref_count: std::sync::atomic::AtomicI32::new(1),
         });
         Box::into_raw(client) as *mut _cef_client_t
@@ -742,6 +1001,16 @@ impl JorenCefClient {
             if !client.load.is_null() {
                 if let Some(rel) = (*client.load).base.release {
                     rel(&mut (*client.load).base);
+                }
+            }
+            if !client.context_menu.is_null() {
+                if let Some(rel) = (*client.context_menu).base.release {
+                    rel(&mut (*client.context_menu).base);
+                }
+            }
+            if !client.request.is_null() {
+                if let Some(rel) = (*client.request).base.release {
+                    rel(&mut (*client.request).base);
                 }
             }
             log_startup("CLIENT_REF", "JorenCefClient DEALLOCATED");
@@ -779,6 +1048,26 @@ impl JorenCefClient {
             }
         }
         this.load
+    }
+
+    unsafe extern "C" fn get_context_menu_handler(self_: *mut _cef_client_t) -> *mut _cef_context_menu_handler_t {
+        let this = (self_ as *mut Self).as_ref().unwrap();
+        if !this.context_menu.is_null() {
+            if let Some(add_ref) = (*this.context_menu).base.add_ref {
+                add_ref(&mut (*this.context_menu).base);
+            }
+        }
+        this.context_menu
+    }
+
+    unsafe extern "C" fn get_request_handler(self_: *mut _cef_client_t) -> *mut _cef_request_handler_t {
+        let this = (self_ as *mut Self).as_ref().unwrap();
+        if !this.request.is_null() {
+            if let Some(add_ref) = (*this.request).base.add_ref {
+                add_ref(&mut (*this.request).base);
+            }
+        }
+        this.request
     }
 }
 
@@ -1065,10 +1354,8 @@ unsafe fn run_cef_main(
                     0
                 }
                 WM_CLOSE => {
-                    // Terminate child local LLM server if active
-                    let _ = std::process::Command::new("taskkill")
-                        .args(["/F", "/IM", "llama-server.exe"])
-                        .output();
+                    // Gracefully terminate child local LLM server if active without cmd flash
+                    crate::llm::stop_local_llm_sync();
                     DestroyWindow(hwnd);
                     0
                 }

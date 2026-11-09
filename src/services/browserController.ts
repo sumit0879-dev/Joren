@@ -317,6 +317,9 @@ class BrowserController {
         tab.is_loading = false;
         this.notify();
       }
+      if (!res.startsWith('joren://') && !res.startsWith('about:')) {
+        tauriService.browserHistoryAdd(res, tab?.title || res, tabId).catch(() => {});
+      }
       return res;
     } catch (err) {
       if (tab) {
@@ -366,6 +369,14 @@ class BrowserController {
       this.isVisible = true;
       await tauriService.browserShowActive(this.currentBounds || undefined);
       this.notify();
+    }
+  }
+
+  public async setClippingRegion(cutouts: Array<{ x: number; y: number; width: number; height: number }>): Promise<void> {
+    try {
+      await tauriService.browserSetClippingRegion(cutouts);
+    } catch (e) {
+      console.warn('Failed to set clipping region:', e);
     }
   }
 

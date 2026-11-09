@@ -119,6 +119,14 @@ const SM_CXSCREEN: i32 = 0;
 #[cfg(target_os = "windows")]
 const SM_CYSCREEN: i32 = 1;
 #[cfg(target_os = "windows")]
+const SM_XVIRTUALSCREEN: i32 = 76;
+#[cfg(target_os = "windows")]
+const SM_YVIRTUALSCREEN: i32 = 77;
+#[cfg(target_os = "windows")]
+const SM_CXVIRTUALSCREEN: i32 = 78;
+#[cfg(target_os = "windows")]
+const SM_CYVIRTUALSCREEN: i32 = 79;
+#[cfg(target_os = "windows")]
 const SW_RESTORE: i32 = 9;
 #[cfg(target_os = "windows")]
 const WM_CLOSE: u32 = 0x0010;
@@ -396,10 +404,16 @@ impl ComputerPlatform for WindowsPlatformAdapter {
     }
 
     fn move_cursor(&self, x: i32, y: i32) -> Result<(), String> {
-        let (max_w, max_h) =
-            unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-        let clamped_x = x.clamp(0, max_w);
-        let clamped_y = y.clamp(0, max_h);
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN),
+                GetSystemMetrics(SM_YVIRTUALSCREEN),
+                GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            )
+        };
+        let clamped_x = if vw > 0 { x.clamp(vx, vx + vw - 1) } else { x };
+        let clamped_y = if vh > 0 { y.clamp(vy, vy + vh - 1) } else { y };
         unsafe {
             SetCursorPos(clamped_x, clamped_y);
         }

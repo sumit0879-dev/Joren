@@ -127,12 +127,37 @@ export const BrowserView: React.FC = () => {
   // Context Menu state & dismiss listener
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
 
+  // In-place floating overlays (Downloads drawer & Overflow menu)
+  const [isDownloadsDrawerOpen, setIsDownloadsDrawerOpen] = useState(false);
+  const [isOverflowMenuOpen, setIsOverflowMenuOpen] = useState(false);
+  const downloadsDrawerRef = useRef<HTMLDivElement>(null);
+  const overflowMenuRef = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!contextMenu) return;
     const handleClose = () => setContextMenu(null);
     window.addEventListener('click', handleClose);
     return () => window.removeEventListener('click', handleClose);
   }, [contextMenu]);
+
+  // Click-outside listener for floating drawers
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (downloadsDrawerRef.current && !downloadsDrawerRef.current.contains(e.target as Node)) {
+        setIsDownloadsDrawerOpen(false);
+      }
+      if (overflowMenuRef.current && !overflowMenuRef.current.contains(e.target as Node)) {
+        setIsOverflowMenuOpen(false);
+      }
+    };
+    if (isDownloadsDrawerOpen || isOverflowMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isDownloadsDrawerOpen, isOverflowMenuOpen]);
 
   // Viewport & Omnibox Refs
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -145,6 +170,27 @@ export const BrowserView: React.FC = () => {
     () => browserState.tabs.find((t) => t.id === browserState.active_tab_id),
     [browserState.tabs, browserState.active_tab_id]
   );
+
+  const canGoBack = activeTab?.can_go_back || false;
+  const canGoForward = activeTab?.can_go_forward || false;
+
+  // Airspace Surface Clipping synchronization for overlays
+  useEffect(() => {
+    const cutouts: Array<{ x: number; y: number; width: number; height: number }> = [];
+    if (isDownloadsDrawerOpen && downloadsDrawerRef.current) {
+      const r = downloadsDrawerRef.current.getBoundingClientRect();
+      cutouts.push({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+    }
+    if (isOverflowMenuOpen && overflowMenuRef.current) {
+      const r = overflowMenuRef.current.getBoundingClientRect();
+      cutouts.push({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+    }
+    if (contextMenu && contextMenuRef.current) {
+      const r = contextMenuRef.current.getBoundingClientRect();
+      cutouts.push({ x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
+    }
+    browserController.setClippingRegion(cutouts);
+  }, [isDownloadsDrawerOpen, isOverflowMenuOpen, contextMenu]);
 
   const activeProfileName = useMemo(() => {
     const active = profilesList.find((p) => p.is_active);
@@ -592,23 +638,26 @@ export const BrowserView: React.FC = () => {
     setContextMenu({ x: e.clientX, y: e.clientY, tabId });
   }, []);
 
-  // 2. History Quick Handler
-  const handleHistoryMenu = useCallback((e: React.MouseEvent) => {
+  // 2. History Quick Handler: Open in a new tab without displacing active website
+  const handleHistoryMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
-    handleNavigate(undefined, 'joren://history');
-  }, [handleNavigate]);
+    const newId = `tab_${Date.now()}`;
+    await browserController.createTab(newId, 'joren://history');
+  }, []);
 
-  // 3. Bookmarks Quick Handler
-  const handleBookmarksMenu = useCallback((e: React.MouseEvent) => {
+  // 3. Bookmarks Quick Handler: Open in a new tab without displacing active website
+  const handleBookmarksMenu = useCallback(async (e: React.MouseEvent) => {
     e.preventDefault();
-    handleNavigate(undefined, 'joren://bookmarks');
-  }, [handleNavigate]);
+    const newId = `tab_${Date.now()}`;
+    await browserController.createTab(newId, 'joren://bookmarks');
+  }, []);
 
-  // 4. Downloads Quick Handler
+  // 4. Downloads Quick Handler: Toggle in-place floating drawer
   const handleDownloadsMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    handleNavigate(undefined, 'joren://downloads');
-  }, [handleNavigate]);
+    setIsDownloadsDrawerOpen((prev) => !prev);
+    setIsOverflowMenuOpen(false);
+  }, []);
 
   // 5. Profiles Quick Handler
   const handleProfilesMenu = useCallback((e: React.MouseEvent) => {
@@ -622,11 +671,12 @@ export const BrowserView: React.FC = () => {
     handleNavigate(undefined, 'joren://privacy');
   }, [handleNavigate]);
 
-  // 7. Overflow / More Menu Handler
+  // 7. Overflow / More Menu Handler: Toggle floating actions dropdown
   const handleOverflowMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    handleNavigate(undefined, 'joren://settings');
-  }, [handleNavigate]);
+    setIsOverflowMenuOpen((prev) => !prev);
+    setIsDownloadsDrawerOpen(false);
+  }, []);
 
   // --- Keyboard Shortcuts Matrix Dispatcher ---
   useEffect(() => {
@@ -849,7 +899,12 @@ export const BrowserView: React.FC = () => {
         <div className="flex items-center space-x-1 shrink-0">
           <button
             onClick={() => browserController.goBack()}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition"
+            disabled={!canGoBack}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+              canGoBack
+                ? 'text-slate-300 hover:text-cyan-400 hover:bg-white/[0.05] cursor-pointer'
+                : 'text-slate-600 opacity-40 cursor-not-allowed'
+            }`}
             title="Back (Alt+Left)"
             aria-label="Back"
           >
@@ -857,7 +912,12 @@ export const BrowserView: React.FC = () => {
           </button>
           <button
             onClick={() => browserController.goForward()}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition"
+            disabled={!canGoForward}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition ${
+              canGoForward
+                ? 'text-slate-300 hover:text-cyan-400 hover:bg-white/[0.05] cursor-pointer'
+                : 'text-slate-600 opacity-40 cursor-not-allowed'
+            }`}
             title="Forward (Alt+Right)"
             aria-label="Forward"
           >
@@ -868,7 +928,7 @@ export const BrowserView: React.FC = () => {
             className={`w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition ${
               isLoading ? 'animate-spin text-cyan-400' : ''
             }`}
-            title="Reload (Ctrl+R)"
+            title="Reload (Ctrl+R / F5)"
             aria-label="Reload"
           >
             <RotateCw className="w-3.5 h-3.5" />
@@ -927,11 +987,11 @@ export const BrowserView: React.FC = () => {
         </form>
 
         {/* Right: Compact Browser Actions (Tier B Flyouts & Overflow) */}
-        <div className="flex items-center space-x-1 shrink-0">
+        <div className="flex items-center space-x-1 shrink-0 relative">
           {/* History Icon */}
           <button
             onClick={handleHistoryMenu}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition cursor-pointer"
             title="History (Ctrl+H)"
             aria-label="History"
           >
@@ -941,7 +1001,7 @@ export const BrowserView: React.FC = () => {
           {/* Downloads Icon */}
           <button
             onClick={handleDownloadsMenu}
-            className="relative w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-emerald-400 hover:bg-white/[0.05] transition"
+            className="relative w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-emerald-400 hover:bg-white/[0.05] transition cursor-pointer"
             title="Downloads (Ctrl+J)"
             aria-label="Downloads"
           >
@@ -954,7 +1014,7 @@ export const BrowserView: React.FC = () => {
           {/* Bookmarks Icon */}
           <button
             onClick={handleBookmarksMenu}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-amber-400 hover:bg-white/[0.05] transition"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-amber-400 hover:bg-white/[0.05] transition cursor-pointer"
             title="Bookmarks (Ctrl+Shift+O)"
             aria-label="Bookmarks"
           >
@@ -964,7 +1024,7 @@ export const BrowserView: React.FC = () => {
           {/* Profiles Icon */}
           <button
             onClick={handleProfilesMenu}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-cyan-400 hover:bg-white/[0.05] transition cursor-pointer"
             title={`Profile: ${activeProfileName}`}
             aria-label="Profiles"
           >
@@ -974,12 +1034,160 @@ export const BrowserView: React.FC = () => {
           {/* Overflow Menu (⋮) */}
           <button
             onClick={handleOverflowMenu}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05] transition"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05] transition cursor-pointer"
             title="More Tools & Settings"
             aria-label="More"
           >
             <MoreVertical className="w-4 h-4" />
           </button>
+
+          {/* In-place Floating Downloads Drawer */}
+          {isDownloadsDrawerOpen && (
+            <div
+              ref={downloadsDrawerRef}
+              className="absolute top-10 right-10 w-80 sm:w-96 max-h-[460px] bg-[#090e1a]/98 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl z-50 p-3 flex flex-col gap-2"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-white/10">
+                <span className="font-semibold text-xs text-white flex items-center gap-1.5 font-mono">
+                  <Download className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Downloads</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newId = `tab_${Date.now()}`;
+                    browserController.createTab(newId, 'joren://downloads');
+                    setIsDownloadsDrawerOpen(false);
+                  }}
+                  className="text-[10px] text-cyan-400 hover:underline cursor-pointer font-mono"
+                >
+                  View All
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2 max-h-72 custom-scrollbar pr-1">
+                {downloadsList.length === 0 ? (
+                  <div className="text-center py-6 text-slate-500 text-xs">No active or recent downloads</div>
+                ) : (
+                  downloadsList.slice(0, 10).map((d) => (
+                    <div key={d.id} className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col gap-1 text-xs hover:border-cyan-500/20 transition">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-slate-200 truncate mr-2" title={d.filename}>{d.filename}</span>
+                        <span className={`text-[10px] uppercase font-mono font-bold ${d.status === 'COMPLETED' ? 'text-emerald-400' : d.status === 'DOWNLOADING' ? 'text-cyan-400 animate-pulse' : 'text-slate-400'}`}>
+                          {d.status}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                        <span className="truncate max-w-[200px]">{d.url}</span>
+                        <span>{Math.round(d.progress * 100)}%</span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* In-place Floating Overflow Menu (Three Dots) */}
+          {isOverflowMenuOpen && (
+            <div
+              ref={overflowMenuRef}
+              className="absolute top-10 right-0 w-56 bg-[#090e1a]/98 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl z-50 p-1.5 text-xs flex flex-col gap-0.5"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  handleCreateNewTab();
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>New Tab</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+T</span>
+              </button>
+              <div className="h-px bg-white/10 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  const newId = `tab_${Date.now()}`;
+                  browserController.createTab(newId, 'joren://bookmarks');
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Bookmarks</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+Shift+O</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const newId = `tab_${Date.now()}`;
+                  browserController.createTab(newId, 'joren://history');
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>History</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+H</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDownloadsDrawerOpen(true);
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Downloads</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+J</span>
+              </button>
+              <div className="h-px bg-white/10 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  handleZoomIn();
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Zoom In</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl++</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleZoomOut();
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Zoom Out</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+-</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleZoomReset();
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Reset Zoom</span>
+                <span className="text-[10px] text-slate-500 font-mono">Ctrl+0</span>
+              </button>
+              <div className="h-px bg-white/10 my-1" />
+              <button
+                type="button"
+                onClick={() => {
+                  const newId = `tab_${Date.now()}`;
+                  browserController.createTab(newId, 'joren://settings');
+                  setIsOverflowMenuOpen(false);
+                }}
+                className="w-full px-3 py-1.5 rounded-lg text-left hover:bg-white/[0.08] text-slate-200 flex items-center justify-between cursor-pointer"
+              >
+                <span>Settings</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1645,6 +1853,7 @@ export const BrowserView: React.FC = () => {
       {/* Tab Context Menu */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="fixed z-50 bg-[#0d1527] border border-cyan-500/30 rounded-xl py-1.5 shadow-2xl backdrop-blur-md font-mono text-xs text-slate-200 min-w-[200px]"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}

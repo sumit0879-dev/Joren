@@ -49,6 +49,31 @@ export const TopHudBar: React.FC<TopHudBarProps> = ({
     setIsModelMenuOpen(false);
   }, [activeTab]);
 
+  // Synchronize clipping region with native browser when model dropdown is open
+  useEffect(() => {
+    if (isModelMenuOpen && activeTab === 'browser') {
+      const updateClip = () => {
+        if (modelMenuRef.current) {
+          const rect = modelMenuRef.current.getBoundingClientRect();
+          browserController.setClippingRegion([{
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          }]);
+        }
+      };
+      updateClip();
+      const t = setTimeout(updateClip, 50);
+      return () => {
+        clearTimeout(t);
+        browserController.setClippingRegion([]);
+      };
+    } else {
+      browserController.setClippingRegion([]);
+    }
+  }, [isModelMenuOpen, activeTab]);
+
   // BUG #10: Close dropdown when pressing Escape key
   useEffect(() => {
     if (!isModelMenuOpen) return;
@@ -143,7 +168,7 @@ export const TopHudBar: React.FC<TopHudBarProps> = ({
       providers.find((p) => p.id === settings.selectedProvider) ||
       customProviders.find((p) => p.id === settings.selectedProvider);
     const activeModelObj = activeProv?.models.find((m) => m.id === settings.selectedModel);
-    return activeModelObj?.label || settings.selectedModel || 'llama-3.3-70b';
+    return activeModelObj?.label || settings.selectedModel || 'Select Model';
   };
 
   return (
@@ -249,35 +274,41 @@ export const TopHudBar: React.FC<TopHudBarProps> = ({
                         )}
                       </div>
 
-                      <div className="space-y-0.5">
-                        {prov.models.map((m) => {
-                          const isSelected =
-                            settings.aiMode === 'api' &&
-                            settings.selectedProvider === prov.id &&
-                            settings.selectedModel === m.id;
+                      {prov.models.length === 0 ? (
+                        <div className="px-2.5 py-1 text-[10px] text-slate-500 italic font-mono">
+                          No models discovered. Fetch in Settings.
+                        </div>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {prov.models.map((m) => {
+                            const isSelected =
+                              settings.aiMode === 'api' &&
+                              settings.selectedProvider === prov.id &&
+                              settings.selectedModel === m.id;
 
-                          return (
-                            <button
-                              key={m.id}
-                              type="button"
-                              onClick={() => handleSelectModel(prov.id, m.id, m.label)}
-                              className={`w-full px-2.5 py-1.5 rounded-xl text-left transition flex items-center justify-between group cursor-pointer ${
-                                isSelected
-                                  ? 'bg-cyan-500/20 text-white font-bold border border-cyan-500/40 shadow-sm'
-                                  : 'hover:bg-white/[0.05] text-slate-300'
-                              }`}
-                            >
-                              <div className="truncate mr-2">
-                                <div className="truncate text-xs">{m.label}</div>
-                                <div className="text-[10px] font-mono text-cyan-400/70 truncate">{m.id}</div>
-                              </div>
-                              {isSelected && (
-                                <Check className="w-4 h-4 text-cyan-400 shrink-0" />
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
+                            return (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => handleSelectModel(prov.id, m.id, m.label)}
+                                className={`w-full px-2.5 py-1.5 rounded-xl text-left transition flex items-center justify-between group cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-cyan-500/20 text-white font-bold border border-cyan-500/40 shadow-sm'
+                                    : 'hover:bg-white/[0.05] text-slate-300'
+                                }`}
+                              >
+                                <div className="truncate mr-2">
+                                  <div className="truncate text-xs">{m.label}</div>
+                                  <div className="text-[10px] font-mono text-cyan-400/70 truncate">{m.id}</div>
+                                </div>
+                                {isSelected && (
+                                  <Check className="w-4 h-4 text-cyan-400 shrink-0" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

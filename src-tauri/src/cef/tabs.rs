@@ -72,6 +72,7 @@ struct TabRec {
 
 struct TabState {
     tabs: Vec<TabRec>,
+    closing_tabs: Vec<TabRec>,
     active_id: Option<String>,
     visible: bool,
     pending: VecDeque<String>,
@@ -84,6 +85,7 @@ fn state() -> &'static Mutex<TabState> {
     STATE.get_or_init(|| {
         Mutex::new(TabState {
             tabs: Vec::new(),
+            closing_tabs: Vec::new(),
             active_id: None,
             visible: false,
             pending: VecDeque::new(),
@@ -170,16 +172,34 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn tab_nav_caps(browser_ptr: usize) -> (bool, bool, bool) {
+    if browser_ptr == 0 {
+        return (false, false, false);
+    }
+    unsafe {
+        let b = browser_ptr as *mut _cef_browser_t;
+        let can_back = (*b).can_go_back.map(|f| f(b) != 0).unwrap_or(false);
+        let can_fwd = (*b).can_go_forward.map(|f| f(b) != 0).unwrap_or(false);
+        let is_loading = (*b).is_loading.map(|f| f(b) != 0).unwrap_or(false);
+        (can_back, can_fwd, is_loading)
+    }
+}
+
 fn tab_json(tab: &TabRec, active: bool, visible: bool) -> serde_json::Value {
+    let (can_back, can_fwd, is_loading) = if tab.browser != 0 {
+        tab_nav_caps(tab.browser)
+    } else {
+        (false, false, tab.is_pending_creation)
+    };
     serde_json::json!({
         "id": tab.id,
         "label": format!("joren_tab_{}", tab.id),
         "url": tab.url,
         "title": if tab.title.is_empty() { "New Tab" } else { tab.title.as_str() },
         "is_active": active,
-        "is_loading": tab.is_pending_creation,
-        "can_go_back": false,
-        "can_go_forward": false,
+        "is_loading": is_loading || tab.is_pending_creation,
+        "can_go_back": can_back,
+        "can_go_forward": can_fwd,
         "created_at": tab.created_at,
         "profile_id": tab.profile_id,
         "is_pinned": tab.is_pinned,
@@ -433,6 +453,15 @@ pub unsafe fn note_closed(browser: *mut _cef_browser_t) -> bool {
     }
     let ptr = browser as usize;
     let mut guard = state().lock().unwrap();
+    // 1. Check closing_tabs registry first (tabs whose close was initiated by Joren)
+    if let Some(pos) = guard.closing_tabs.iter().position(|t| t.browser == ptr) {
+        let tab = guard.closing_tabs.remove(pos);
+        drop(guard);
+        release_browser(ptr);
+        log_startup("TAB", &format!("CEF closing tab '{}' released OnBeforeClose", tab.id));
+        return true;
+    }
+    // 2. Check active tabs (tabs closed externally, e.g. via window.close())
     if let Some(pos) = guard.tabs.iter().position(|t| t.browser == ptr) {
         let tab = guard.tabs.remove(pos);
         guard.closed_history.push_front((tab.id.clone(), tab.url.clone()));
@@ -444,7 +473,7 @@ pub unsafe fn note_closed(browser: *mut _cef_browser_t) -> bool {
         }
         drop(guard);
         release_browser(ptr);
-        log_startup("TAB", &format!("CEF tab '{}' closed", tab.id));
+        log_startup("TAB", &format!("CEF tab '{}' closed externally", tab.id));
         true
     } else {
         false
@@ -456,11 +485,28 @@ pub fn note_navigation(browser: *mut _cef_browser_t, url: String) {
         return;
     }
     let ptr = browser as usize;
-    let mut guard = state().lock().unwrap();
-    if let Some(tab) = guard.tabs.iter_mut().find(|t| t.browser == ptr) {
-        tab.url = url.clone();
-        if let Some(extracted) = extract_title_from_url(&url) {
-            tab.title = extracted;
+    let (tab_id, title) = {
+        let mut guard = state().lock().unwrap();
+        if let Some(tab) = guard.tabs.iter_mut().find(|t| t.browser == ptr) {
+            tab.url = url.clone();
+            tab.is_internal = is_allowed_internal_url(&url);
+            if let Some(extracted) = extract_title_from_url(&url) {
+                tab.title = extracted;
+            }
+            (Some(tab.id.clone()), tab.title.clone())
+        } else {
+            (None, String::new())
+        }
+    };
+
+    if let Some(tid) = tab_id {
+        if !url.starts_with("joren://") && !url.starts_with("about:") {
+            let appdata = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+            let db_path = std::path::PathBuf::from(appdata).join("Joren").join("joren.db");
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                let display_title = if title.is_empty() { &url } else { &title };
+                let _ = crate::db::add_browser_history_entry(&conn, &url, display_title, Some(&tid));
+            }
         }
     }
 }
@@ -805,6 +851,66 @@ pub fn set_bounds(args: &serde_json::Value) -> Result<serde_json::Value, String>
     })?
 }
 
+pub fn set_clipping_region(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    run_on_ui(move || {
+        let guard = state().lock().unwrap();
+        let active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
+        let Some(tab) = active else {
+            return Ok(serde_json::json!({ "success": true, "clipped": false }));
+        };
+        #[cfg(target_os = "windows")]
+        if tab.hwnd != 0 {
+            use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CombineRgn, DeleteObject, RGN_DIFF};
+            use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowRgn;
+
+            let host = host_hwnd();
+            let scale = if host != 0 {
+                let dpi = unsafe { get_window_dpi(host) };
+                dpi as f64 / 96.0
+            } else {
+                1.0
+            };
+
+            let tab_x = (tab.bounds.x as f64 * scale).round() as i32;
+            let tab_y = (tab.bounds.y as f64 * scale).round() as i32;
+            let tab_w = (tab.bounds.width as f64 * scale).round() as i32;
+            let tab_h = (tab.bounds.height as f64 * scale).round() as i32;
+
+            let cutouts = args.get("cutouts").and_then(|v| v.as_array());
+            if let Some(list) = cutouts {
+                if !list.is_empty() && tab_w > 0 && tab_h > 0 {
+                    unsafe {
+                        let base_rgn = CreateRectRgn(0, 0, tab_w, tab_h);
+                        for item in list {
+                            let cx = (item.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) * scale).round() as i32;
+                            let cy = (item.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) * scale).round() as i32;
+                            let cw = (item.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0) * scale).round() as i32;
+                            let ch = (item.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0) * scale).round() as i32;
+
+                            let x1 = (cx - tab_x).max(0);
+                            let y1 = (cy - tab_y).max(0);
+                            let x2 = (cx + cw - tab_x).min(tab_w);
+                            let y2 = (cy + ch - tab_y).min(tab_h);
+
+                            if x2 > x1 && y2 > y1 {
+                                let hole = CreateRectRgn(x1, y1, x2, y2);
+                                CombineRgn(base_rgn, base_rgn, hole, RGN_DIFF);
+                                DeleteObject(hole);
+                            }
+                        }
+                        SetWindowRgn(tab.hwnd as *mut _, base_rgn, 1);
+                    }
+                    return Ok(serde_json::json!({ "success": true, "clipped": true }));
+                }
+            }
+            unsafe {
+                SetWindowRgn(tab.hwnd as *mut _, std::ptr::null_mut(), 1);
+            }
+        }
+        Ok(serde_json::json!({ "success": true, "clipped": false }))
+    })?
+}
+
 pub fn switch_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let bounds = bounds_from(args.get("bounds"));
@@ -842,11 +948,7 @@ pub fn switch_tab(args: &serde_json::Value) -> Result<serde_json::Value, String>
 pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = args.get("tabId").or_else(|| args.get("tab_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     run_on_ui(move || {
-        let ptr = {
-            let guard = state().lock().unwrap();
-            guard.tabs.iter().find(|t| t.id == id).map(|t| t.browser).unwrap_or(0)
-        };
-        if ptr == 0 {
+        let (removed_tab, next_active_json) = {
             let mut guard = state().lock().unwrap();
             if let Some(pos) = guard.tabs.iter().position(|t| t.id == id) {
                 let tab = guard.tabs.remove(pos);
@@ -857,47 +959,92 @@ pub fn close_tab(args: &serde_json::Value) -> Result<serde_json::Value, String> 
                 if guard.active_id.as_deref() == Some(&id) {
                     guard.active_id = guard.tabs.last().map(|t| t.id.clone());
                 }
+                // Immediately hide its HWND
+                #[cfg(target_os = "windows")]
+                if tab.hwnd != 0 {
+                    place_hwnd(tab.hwnd, tab.bounds, false);
+                }
+
+                let next_active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
+                let json = next_active.map(|t| tab_json(t, true, guard.visible)).unwrap_or(serde_json::Value::Null);
+                (Some(tab), json)
+            } else {
+                (None, serde_json::Value::Null)
             }
-            let next_active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
-            let json = next_active.map(|t| tab_json(t, true, guard.visible)).unwrap_or(serde_json::Value::Null);
-            log_startup("TAB", &format!("Virtual tab '{id}' closed"));
-            return Ok(json);
-        }
-        unsafe {
-            let browser = ptr as *mut _cef_browser_t;
-            if let Some(get_host) = (*browser).get_host {
-                let host = get_host(browser);
-                if !host.is_null() {
-                    if let Some(close) = (*host).close_browser {
-                        close(host, 1);
+        };
+
+        if let Some(tab) = removed_tab {
+            if tab.browser != 0 {
+                let ptr = tab.browser;
+                {
+                    let mut guard = state().lock().unwrap();
+                    guard.closing_tabs.push(tab);
+                }
+                unsafe {
+                    let browser = ptr as *mut _cef_browser_t;
+                    if let Some(get_host) = (*browser).get_host {
+                        let host = get_host(browser);
+                        if !host.is_null() {
+                            if let Some(close) = (*host).close_browser {
+                                close(host, 1);
+                            }
+                            if let Some(release) = (*host).base.release {
+                                release(&mut (*host).base);
+                            }
+                        }
                     }
-                    if let Some(release) = (*host).base.release {
-                        release(&mut (*host).base);
+                }
+            }
+            log_startup("TAB", &format!("Tab '{id}' removed and CEF close initiated"));
+        }
+
+        // Make sure next active tab is visible if browser view is currently open
+        {
+            let guard = state().lock().unwrap();
+            if guard.visible {
+                if let Some(active) = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id)) {
+                    #[cfg(target_os = "windows")]
+                    if active.hwnd != 0 && !active.is_internal {
+                        place_hwnd(active.hwnd, active.bounds, true);
                     }
                 }
             }
         }
-        let guard = state().lock().unwrap();
-        let next_active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
-        let json = next_active.map(|t| tab_json(t, true, guard.visible)).unwrap_or(serde_json::Value::Null);
-        Ok(json)
+
+        Ok(next_active_json)
     })?
 }
 
 pub fn close_other_tabs(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let keep_id = active_or(args)?;
     run_on_ui(move || {
-        let to_close: Vec<(String, usize)> = {
-            let guard = state().lock().unwrap();
-            guard
-                .tabs
-                .iter()
-                .filter(|t| t.id != keep_id)
-                .map(|t| (t.id.clone(), t.browser))
-                .collect()
+        let removed: Vec<TabRec> = {
+            let mut guard = state().lock().unwrap();
+            let mut keep = Vec::new();
+            let mut drop_tabs = Vec::new();
+            for tab in guard.tabs.drain(..) {
+                if tab.id == keep_id {
+                    keep.push(tab);
+                } else {
+                    drop_tabs.push(tab);
+                }
+            }
+            guard.tabs = keep;
+            guard.active_id = Some(keep_id);
+            drop_tabs
         };
-        for (_tid, ptr) in to_close {
-            if ptr != 0 {
+
+        for tab in removed {
+            #[cfg(target_os = "windows")]
+            if tab.hwnd != 0 {
+                place_hwnd(tab.hwnd, tab.bounds, false);
+            }
+            if tab.browser != 0 {
+                let ptr = tab.browser;
+                {
+                    let mut guard = state().lock().unwrap();
+                    guard.closing_tabs.push(tab);
+                }
                 unsafe {
                     let b = ptr as *mut _cef_browser_t;
                     if let Some(gh) = (*b).get_host {
@@ -914,9 +1061,6 @@ pub fn close_other_tabs(args: &serde_json::Value) -> Result<serde_json::Value, S
                 }
             }
         }
-        let mut guard = state().lock().unwrap();
-        guard.tabs.retain(|t| t.id == keep_id);
-        guard.active_id = Some(keep_id);
         Ok(serde_json::json!({ "success": true, "closed_others": true }))
     })?
 }
@@ -924,16 +1068,26 @@ pub fn close_other_tabs(args: &serde_json::Value) -> Result<serde_json::Value, S
 pub fn close_tabs_to_right(args: &serde_json::Value) -> Result<serde_json::Value, String> {
     let id = active_or(args)?;
     run_on_ui(move || {
-        let to_close: Vec<(String, usize)> = {
-            let guard = state().lock().unwrap();
+        let removed: Vec<TabRec> = {
+            let mut guard = state().lock().unwrap();
             if let Some(idx) = guard.tabs.iter().position(|t| t.id == id) {
-                guard.tabs[idx + 1..].iter().map(|t| (t.id.clone(), t.browser)).collect()
+                guard.tabs.split_off(idx + 1)
             } else {
                 Vec::new()
             }
         };
-        for (_tid, ptr) in to_close {
-            if ptr != 0 {
+
+        for tab in removed {
+            #[cfg(target_os = "windows")]
+            if tab.hwnd != 0 {
+                place_hwnd(tab.hwnd, tab.bounds, false);
+            }
+            if tab.browser != 0 {
+                let ptr = tab.browser;
+                {
+                    let mut guard = state().lock().unwrap();
+                    guard.closing_tabs.push(tab);
+                }
                 unsafe {
                     let b = ptr as *mut _cef_browser_t;
                     if let Some(gh) = (*b).get_host {
@@ -949,10 +1103,6 @@ pub fn close_tabs_to_right(args: &serde_json::Value) -> Result<serde_json::Value
                     }
                 }
             }
-        }
-        let mut guard = state().lock().unwrap();
-        if let Some(idx) = guard.tabs.iter().position(|t| t.id == id) {
-            guard.tabs.truncate(idx + 1);
         }
         Ok(serde_json::json!({ "success": true, "closed_to_right": true }))
     })?
