@@ -93,8 +93,11 @@ jobs:
         run: |
           cargo build --release --manifest-path src-tauri/Cargo.toml 2>&1 | Tee-Object -FilePath "cargo-build.log"
           if ($LASTEXITCODE -ne 0) {
-            $raw = (Get-Content "cargo-build.log" -Tail 80 | Out-String).Trim()
-            $escaped = $raw -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            $err = (Get-Content "cargo-build.log" | Select-String -Pattern "error\[|error:" -Context 1,10 | Out-String).Trim()
+            if (-not $err) {
+              $err = (Get-Content "cargo-build.log" -Tail 60 | Out-String).Trim()
+            }
+            $escaped = $err -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
             Write-Host "::error title=Cargo Release Build Failure::$escaped"
             exit 1
           }

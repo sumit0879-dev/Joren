@@ -14,7 +14,6 @@ use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tauri::Emitter;
 
 /// Returns canonical definitions for all active `joren.*` tools.
 pub fn get_joren_definitions() -> Vec<ToolDefinition> {

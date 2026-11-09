@@ -2152,7 +2152,7 @@ mod tests {
         assert_eq!(msgs2.len(), 2, "Different idempotency keys must both be preserved");
 
         // Re-initializing database creates backup
-        let conn2 = init_db_at(&temp.path).expect("re-init_db_at failed");
+        let _conn2 = init_db_at(&temp.path).expect("re-init_db_at failed");
         let parent = temp.path.parent().unwrap();
         let backups_dir = parent.join("backups");
         assert!(backups_dir.exists(), "Backups directory should be created");
