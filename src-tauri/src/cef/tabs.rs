@@ -860,8 +860,7 @@ pub fn set_clipping_region(args: &serde_json::Value) -> Result<serde_json::Value
         };
         #[cfg(target_os = "windows")]
         if tab.hwnd != 0 {
-            use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CombineRgn, DeleteObject, RGN_DIFF};
-            use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowRgn;
+            use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CombineRgn, DeleteObject, RGN_DIFF, SetWindowRgn};
 
             let host = host_hwnd();
             let scale = if host != 0 {

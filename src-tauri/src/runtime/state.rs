@@ -92,6 +92,30 @@ impl EdithRuntimeState {
         )
     }
 
+    /// Creates a default in-memory mock EdithRuntimeState for tests without requiring boilerplate setup.
+    pub fn mock_default() -> Self {
+        let conversation_core = Arc::new(ConversationCore::mock(Arc::new(ProviderRegistry::new())));
+        let task_runtime = Arc::new(TaskRuntime::new(None));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let domain_registry = Arc::new(crate::tools::DomainExecutorRegistry::new());
+        let policy_engine = Arc::new(PolicyEngine::new(None));
+        let tool_router = Arc::new(ToolRouter::with_defaults(
+            tool_registry.clone(),
+            domain_registry,
+            policy_engine.clone(),
+            None,
+        ));
+        let provider_registry = Arc::new(RwLock::new(ProviderRegistry::new()));
+        Self::mock(
+            conversation_core,
+            task_runtime,
+            tool_registry,
+            tool_router,
+            provider_registry,
+            policy_engine,
+        )
+    }
+
     /// Accessors for underlying subsystems (coordination boundary)
     pub fn conversation_core(&self) -> &Arc<ConversationCore> {
         &self.conversation_core

@@ -89,7 +89,14 @@ jobs:
           Write-Host "CEF distribution successfully cached."
 
       - name: Build Sandboxed Joren Client Library (Release)
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path src-tauri/Cargo.toml 2>&1 | Tee-Object -FilePath "cargo-build.log"
+          if ($LASTEXITCODE -ne 0) {
+            $summary = Get-Content "cargo-build.log" -Tail 60 | Out-String
+            Write-Host "::error::Cargo release build failed:`n$summary"
+            exit 1
+          }
 
       - name: Stage Release Package & Runtime Files
         shell: pwsh

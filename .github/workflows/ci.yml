@@ -69,4 +69,11 @@ jobs:
             ${{ runner.os }}-cargo-ci-v4-joren-
 
       - name: Run Rust unit tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --test cef_browser_tests 2>&1 | Tee-Object -FilePath "unit-tests.log"
+          if ($LASTEXITCODE -ne 0) {
+            $summary = Get-Content "unit-tests.log" -Tail 60 | Out-String
+            Write-Host "::error::Cargo unit tests failed:`n$summary"
+            exit 1
+          }

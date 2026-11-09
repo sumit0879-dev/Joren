@@ -100,15 +100,15 @@ fn test_scenario_5_automatic_history_persistence() {
     let conn = db::init_db_in_memory().expect("In-memory DB init failed");
 
     // Add browser history entries
-    db::add_browser_history_entry(&conn, "https://example.com/page1", Some("Example Page 1"))
+    db::add_browser_history_entry(&conn, "https://example.com/page1", "Example Page 1", None)
         .expect("Failed to add history entry");
-    db::add_browser_history_entry(&conn, "https://example.com/page2", Some("Example Page 2"))
+    db::add_browser_history_entry(&conn, "https://example.com/page2", "Example Page 2", None)
         .expect("Failed to add history entry");
 
-    let history = db::get_browser_history(&conn, 10).expect("Failed to fetch history");
+    let history = db::get_recent_browser_history(&conn, Some(10)).expect("Failed to fetch history");
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].url, "https://example.com/page2");
-    assert_eq!(history[0].title.as_deref(), Some("Example Page 2"));
+    assert_eq!(history[0].title, "Example Page 2");
     assert_eq!(history[1].url, "https://example.com/page1");
 }
 
@@ -174,7 +174,7 @@ fn test_scenario_8_programmatic_ai_self_control() {
 
 #[tokio::test]
 async fn test_scenario_9_runtime_self_knowledge_grounding() {
-    let runtime_state = Arc::new(EdithRuntimeState::mock(None));
+    let runtime_state = Arc::new(EdithRuntimeState::mock_default());
     let status = runtime_state.get_runtime_status(None).await;
 
     // Verify active model settings and uptime

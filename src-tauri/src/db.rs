@@ -224,9 +224,20 @@ pub fn init_db_in_memory() -> Result<Connection> {
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
             content TEXT NOT NULL,
-            embedding_json TEXT NOT NULL,
+            category TEXT NOT NULL,
             source TEXT NOT NULL,
-            timestamp TEXT NOT NULL
+            confidence REAL NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS knowledge_items (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            path TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            tags TEXT,
+            summary TEXT
         );
         CREATE TABLE IF NOT EXISTS system_telemetry (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -245,50 +256,100 @@ pub fn init_db_in_memory() -> Result<Connection> {
             expires_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS browser_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             url TEXT NOT NULL,
-            title TEXT,
-            visit_time TEXT NOT NULL
+            title TEXT NOT NULL,
+            visited_at INTEGER NOT NULL DEFAULT 0,
+            tab_id TEXT,
+            visit_count INTEGER NOT NULL DEFAULT 1,
+            last_visited_at INTEGER NOT NULL,
+            profile_id TEXT DEFAULT 'profile_default'
+        );
+        CREATE INDEX IF NOT EXISTS idx_browser_history_visited_at ON browser_history(last_visited_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_browser_history_url ON browser_history(url);
+
+        CREATE TABLE IF NOT EXISTS browser_bookmark_folders (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            parent_id TEXT,
+            created_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS browser_bookmarks (
             id TEXT PRIMARY KEY,
-            url TEXT NOT NULL,
             title TEXT NOT NULL,
-            folder TEXT NOT NULL DEFAULT '',
-            created_at INTEGER NOT NULL
+            url TEXT NOT NULL,
+            folder_id TEXT,
+            favicon TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            profile_id TEXT DEFAULT 'profile_default'
         );
+        CREATE INDEX IF NOT EXISTS idx_browser_bookmarks_url ON browser_bookmarks(url);
+        CREATE INDEX IF NOT EXISTS idx_browser_bookmarks_folder ON browser_bookmarks(folder_id);
+
         CREATE TABLE IF NOT EXISTS browser_downloads (
-            download_id TEXT PRIMARY KEY,
-            url TEXT NOT NULL,
-            suggested_filename TEXT NOT NULL,
-            received_bytes INTEGER NOT NULL DEFAULT 0,
-            total_bytes INTEGER NOT NULL DEFAULT 0,
-            current_speed INTEGER NOT NULL DEFAULT 0,
-            percent_complete INTEGER NOT NULL DEFAULT 0,
-            state TEXT NOT NULL DEFAULT 'in_progress',
-            is_paused INTEGER NOT NULL DEFAULT 0,
-            start_time TEXT NOT NULL,
-            end_time TEXT,
-            full_path TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS browser_tab_groups (
             id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            color TEXT NOT NULL,
-            collapsed INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL
+            url TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            suggested_filename TEXT NOT NULL,
+            destination TEXT NOT NULL,
+            total_bytes INTEGER,
+            received_bytes INTEGER NOT NULL,
+            progress REAL NOT NULL,
+            status TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            error TEXT,
+            tab_id TEXT
         );
+        CREATE INDEX IF NOT EXISTS idx_browser_downloads_started_at ON browser_downloads(started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS browser_profiles (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            profile_type TEXT NOT NULL,
+            user_data_dir TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 0
+        );
+
         CREATE TABLE IF NOT EXISTS browser_tabs (
             id TEXT PRIMARY KEY,
-            profile_id TEXT NOT NULL,
-            group_id TEXT,
             url TEXT NOT NULL,
             title TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            group_id TEXT,
             is_pinned INTEGER NOT NULL DEFAULT 0,
-            position INTEGER NOT NULL DEFAULT 0,
-            last_accessed_at TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            is_active INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS browser_privacy_settings (
+            profile_id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            block_ads INTEGER NOT NULL DEFAULT 1,
+            block_trackers INTEGER NOT NULL DEFAULT 1,
+            send_dnt INTEGER NOT NULL DEFAULT 1,
+            send_gpc INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS browser_tab_groups (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL,
+            is_collapsed INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tab_groups_profile ON browser_tab_groups(profile_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idempotency ON messages(session_id, idempotency_key);
     ",
     )?;
     Ok(conn)
@@ -540,7 +601,7 @@ pub fn init_db_at(db_path: &PathBuf) -> Result<Connection> {
     }
 
     let _ = conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idempotency ON messages(session_id, idempotency_key) WHERE idempotency_key IS NOT NULL;",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_idempotency ON messages(session_id, idempotency_key);",
         [],
     );
 
