@@ -203,6 +203,97 @@ pub fn migrate_and_init_db(target_db_path: &PathBuf, legacy_candidate_dirs: &[Pa
     init_db_at(target_db_path)
 }
 
+pub fn init_db_in_memory() -> Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS personal_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, timestamp TEXT);
+        CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, timestamp TEXT);
+        CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, text TEXT, time TEXT, idempotency_key TEXT);
+        CREATE TABLE IF NOT EXISTS custom_apps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            path TEXT NOT NULL,
+            keywords TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS plugin_states (
+            id TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1
+        );
+        CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            embedding_json TEXT NOT NULL,
+            source TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS system_telemetry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            category TEXT NOT NULL,
+            details_json TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS command_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            command TEXT NOT NULL,
+            working_dir TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS browser_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL,
+            title TEXT,
+            visit_time TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS browser_bookmarks (
+            id TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            folder TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS browser_downloads (
+            download_id TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            suggested_filename TEXT NOT NULL,
+            received_bytes INTEGER NOT NULL DEFAULT 0,
+            total_bytes INTEGER NOT NULL DEFAULT 0,
+            current_speed INTEGER NOT NULL DEFAULT 0,
+            percent_complete INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'in_progress',
+            is_paused INTEGER NOT NULL DEFAULT 0,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            full_path TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS browser_tab_groups (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            color TEXT NOT NULL,
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS browser_tabs (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            group_id TEXT,
+            url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            last_accessed_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    ",
+    )?;
+    Ok(conn)
+}
+
 pub fn init_db_at(db_path: &PathBuf) -> Result<Connection> {
     // Create the parent directory if it doesn't exist
     if let Some(parent) = db_path.parent() {

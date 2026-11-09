@@ -269,9 +269,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_context_assembler_deduplicates_current_input() {
-        let memory = Arc::new(RwLock::new(MockMemoryStore::default()));
+        let memory = Arc::new(StaticMemoryRetriever::new(vec![]));
         let assembler = ContextAssembler::new(
-            "Stark AI directive: Assist Tony Stark at all times.",
+            Some("Stark AI directive: Assist Tony Stark at all times.".to_string()),
+            None,
             memory,
         );
 

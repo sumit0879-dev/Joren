@@ -181,7 +181,7 @@ async fn test_scenario_9_runtime_self_knowledge_grounding() {
     assert!(status.uptime_seconds >= 0);
 
     // Verify system prompt incorporates self-knowledge and identity
-    let assembler = ContextAssembler::new(10);
+    let assembler = ContextAssembler::default();
     let prompt = assembler.build_system_prompt_with_identity(&[], Some("groq"), Some("llama-3.3-70b"));
 
     assert!(prompt.contains("Joren"), "Must identify as Joren");
