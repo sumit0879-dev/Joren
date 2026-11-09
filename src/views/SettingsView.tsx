@@ -342,12 +342,30 @@ export const SettingsView: React.FC = () => {
     } else if (targetProv.id === 'gemini') {
       baseUrl = 'gemini';
       apiKey = settings.apiKey_gemini || settings.apiKey || '';
+    } else if (targetProv.id === 'huggingface') {
+      baseUrl = 'https://huggingface.co';
+      apiKey = settings.apiKey_huggingface || settings.huggingfaceApiKey || settings.apiKey || '';
+    } else if (targetProv.id === 'openrouter') {
+      baseUrl = 'https://openrouter.ai/api/v1';
+      apiKey = settings.apiKey_openrouter || settings.apiKey || '';
+    } else if (targetProv.id === 'openai') {
+      baseUrl = 'https://api.openai.com/v1';
+      apiKey = settings.apiKey_openai || settings.apiKey || '';
+    } else if (targetProv.id === 'deepseek') {
+      baseUrl = 'https://api.deepseek.com';
+      apiKey = settings.apiKey_deepseek || settings.apiKey || '';
+    } else if (targetProv.id === 'together') {
+      baseUrl = 'https://api.together.xyz/v1';
+      apiKey = settings.apiKey_together || settings.apiKey || '';
+    } else if (targetProv.id === 'ollama' || targetProv.id === 'local') {
+      baseUrl = targetProv.baseUrl || 'http://localhost:11434';
+      apiKey = '';
     } else if (targetProv.isCustom) {
       baseUrl = targetProv.baseUrl || '';
       apiKey = targetProv.apiKey || settings['apiKey_' + targetProv.id] || settings.apiKey || '';
     }
 
-    if (!apiKey && targetProv.id !== 'local') {
+    if (!apiKey && targetProv.id !== 'local' && targetProv.id !== 'ollama') {
       showToast(`Please enter your ${targetProv.name} API Key first in API Keys Suite.`, 'warning');
       setActiveSubTab('keys');
       return;
@@ -1063,8 +1081,13 @@ export const SettingsView: React.FC = () => {
               {[
                 { key: 'apiKey_groq', label: 'Groq Cloud Key', placeholder: 'gsk_...', link: 'https://console.groq.com' },
                 { key: 'apiKey_gemini', label: 'Google Gemini API Key', placeholder: 'AIzaSy...', link: 'https://aistudio.google.com' },
+                { key: 'apiKey_huggingface', label: 'Hugging Face Access Token', placeholder: 'hf_...', link: 'https://huggingface.co/settings/tokens' },
+                { key: 'apiKey_openrouter', label: 'OpenRouter API Key', placeholder: 'sk-or-v1-...', link: 'https://openrouter.ai/keys' },
+                { key: 'apiKey_openai', label: 'OpenAI API Key', placeholder: 'sk-proj-...', link: 'https://platform.openai.com/api-keys' },
+                { key: 'apiKey_deepseek', label: 'DeepSeek API Key', placeholder: 'sk-...', link: 'https://platform.deepseek.com' },
+                { key: 'apiKey_together', label: 'Together AI Key', placeholder: '...', link: 'https://api.together.xyz' },
                 { key: 'tavilyApiKey', label: 'Tavily Deep Web Search Key', placeholder: 'tvly-...', link: 'https://tavily.com' },
-                { key: 'huggingfaceApiKey', label: 'Hugging Face (SDXL) Key', placeholder: 'hf_...', link: 'https://huggingface.co/settings/tokens' },
+                { key: 'huggingfaceApiKey', label: 'Legacy HF Image Generation Key', placeholder: 'hf_...', link: 'https://huggingface.co/settings/tokens' },
                 ...customProviders.map((cp) => ({
                   key: 'apiKey_' + cp.id,
                   label: `${cp.name} API Key`,

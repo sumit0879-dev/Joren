@@ -491,7 +491,9 @@ impl ModelDiscoveryCapability for GroqAdapter {
             }
 
             if discovered.is_empty() {
-                return Ok(Self::default_models());
+                return Err(ProviderError::MalformedResponse {
+                    message: "No models returned by Groq endpoint.".to_string(),
+                });
             }
 
             discovered.sort_by(|a, b| a.display_name.cmp(&b.display_name));

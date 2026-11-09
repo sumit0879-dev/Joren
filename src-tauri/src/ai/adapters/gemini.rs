@@ -592,7 +592,9 @@ impl ModelDiscoveryCapability for GeminiAdapter {
             }
 
             if discovered.is_empty() {
-                return Ok(Self::default_models());
+                return Err(ProviderError::MalformedResponse {
+                    message: "No generation models returned by Gemini API.".to_string(),
+                });
             }
 
             discovered.sort_by(|a, b| a.display_name.cmp(&b.display_name));

@@ -479,7 +479,9 @@ impl ModelDiscoveryCapability for OpenAICompatibleAdapter {
             }
 
             if discovered.is_empty() {
-                return Ok(self.models.clone());
+                return Err(ProviderError::MalformedResponse {
+                    message: format!("No models found from endpoint '{}'.", self.models_endpoint),
+                });
             }
 
             discovered.sort_by(|a, b| a.display_name.cmp(&b.display_name));
