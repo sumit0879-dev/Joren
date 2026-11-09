@@ -84,8 +84,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isRecording, setIsRecording] = useState(false);
   const [isTelemetryOpen, setIsTelemetryOpen] = useState(true);
   const [isStandbyMode, setIsStandbyMode] = useState(false);
-  const [recognition, setRecognition] = useState<any>(null);
-  const recognitionRef = useRef<any>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const ttsAbortControllerRef = useRef<AbortController | null>(null);
 
   const toggleTelemetry = useCallback(() => {
@@ -395,11 +395,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       setIsSpeaking(true);
-      if (settings.ttsEngine === 'local') {
-        await tauriService.localTtsSpeak(trimmed, settings.ttsVoice || 'af_sky', settings.kokoroModel || 'kokoro-v1.0.int8.onnx');
-      } else {
-        await tauriService.ttsSpeak(trimmed, settings.ttsVoice || 'hi-IN-SwaraNeural');
-      }
+      await tauriService.ttsSpeak(trimmed, settings.ttsVoice || 'en-US-ChristopherNeural');
     } catch (e: any) {
       if (ttsAbortControllerRef.current === currentController) {
         console.error('TTS error:', e);
@@ -413,94 +409,140 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [settings.ttsEngine, settings.ttsVoice, settings.kokoroModel, showToast]);
 
-  // BUG #8 & BUG #2: Stop active TTS and Speech Recognition when switching sessions or application views
+  // Stop active TTS and Speech Recording when switching sessions or application views
   useEffect(() => {
     stopSpeaking();
-    if (recognitionRef.current) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
-        recognitionRef.current.abort();
+        mediaRecorderRef.current.stop();
       } catch {}
-      recognitionRef.current = null;
-      setIsRecording(false);
+      mediaRecorderRef.current = null;
     }
+    if (mediaStreamRef.current) {
+      try {
+        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      } catch {}
+      mediaStreamRef.current = null;
+    }
+    setIsRecording(false);
   }, [activeSessionId, activeTab, stopSpeaking]);
 
   const toggleRecording = useCallback((onTranscript: (text: string) => void) => {
     if (isRecording) {
-      if (recognitionRef.current) {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
-          recognitionRef.current.stop();
+          mediaRecorderRef.current.stop();
         } catch {}
-        recognitionRef.current = null;
+      }
+      if (mediaStreamRef.current) {
+        try {
+          mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+        } catch {}
+        mediaStreamRef.current = null;
       }
       setIsRecording(false);
       return;
     }
 
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      showToast('Speech recognition is not supported in this browser environment.', 'warning');
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showToast('Microphone audio recording is not supported in this environment.', 'warning');
       return;
     }
 
     // Turn Interruption (Barge-in): Halt active speech output before opening microphone
     stopSpeaking();
 
-    try {
-      const recog = new SpeechRecognition();
-      recog.continuous = false;
-      recog.interimResults = false;
-      recog.lang = 'en-US';
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        mediaStreamRef.current = stream;
+        const mediaRecorder = new MediaRecorder(stream);
+        const audioChunks: Blob[] = [];
 
-      recog.onstart = () => {
-        setIsRecording(true);
-        showToast('Listening... Speak now', 'info');
-      };
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            audioChunks.push(e.data);
+          }
+        };
 
-      recog.onresult = (event: any) => {
-        const transcript = event.results?.[0]?.[0]?.transcript;
-        if (transcript) {
-          onTranscript(transcript);
-        }
-      };
+        mediaRecorder.onstart = () => {
+          setIsRecording(true);
+          showToast('Listening... Speak now', 'info');
+        };
 
-      recog.onerror = (event: any) => {
-        const err = event.error;
+        mediaRecorder.onstop = async () => {
+          setIsRecording(false);
+          mediaRecorderRef.current = null;
+          if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+            mediaStreamRef.current = null;
+          }
+
+          if (audioChunks.length === 0) return;
+
+          try {
+            const audioBlob = new Blob(audioChunks, {
+              type: mediaRecorder.mimeType || 'audio/webm',
+            });
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const AudioContextClass =
+              window.AudioContext || (window as any).webkitAudioContext;
+            if (!AudioContextClass) {
+              showToast('AudioContext not supported in this environment.', 'error');
+              return;
+            }
+            const audioCtx = new AudioContextClass();
+            const decoded = await audioCtx.decodeAudioData(arrayBuffer);
+            const samples = Array.from(decoded.getChannelData(0));
+            await audioCtx.close();
+
+            showToast('Transcribing audio with online STT...', 'info');
+            const transcript = await tauriService.transcribeAudio(
+              samples,
+              decoded.sampleRate,
+              'en'
+            );
+            if (transcript && transcript.trim()) {
+              onTranscript(transcript.trim());
+              showToast('Speech recognized', 'info');
+            } else {
+              showToast('No speech detected in audio.', 'info');
+            }
+          } catch (err: any) {
+            console.error('Audio transcription error:', err);
+            const msg = err.message || String(err);
+            if (msg.includes('API key') || msg.includes('not configured')) {
+              showToast(
+                'Please set your Groq or OpenAI API key in Settings -> Models & Providers for STT.',
+                'warning'
+              );
+            } else {
+              showToast('Voice transcription failed: ' + msg, 'error');
+            }
+          }
+        };
+
+        mediaRecorder.onerror = (e) => {
+          console.error('MediaRecorder error:', e);
+          setIsRecording(false);
+          showToast('Microphone recording error', 'error');
+        };
+
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.start();
+      })
+      .catch((err: any) => {
         setIsRecording(false);
-        recognitionRef.current = null;
-
-        // BUG #2: Silence (no-speech) and user cancellation (aborted) are normal expected completions, not critical system failures
-        if (err === 'no-speech' || err === 'aborted') {
-          return;
-        }
-
-        if (err === 'not-allowed' || err === 'service-not-allowed') {
-          showToast('Microphone access denied. Please check microphone permissions.', 'error');
-        } else if (err === 'audio-capture') {
+        console.error('Microphone access failed:', err);
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          showToast('Microphone access denied. Please grant microphone permissions.', 'error');
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
           showToast('No microphone found. Please connect a microphone.', 'error');
-        } else if (err === 'network') {
-          showToast('Speech recognition network error. Please check your connection.', 'error');
         } else {
-          showToast('Speech recognition error: ' + err, 'error');
+          showToast('Failed to start microphone: ' + (err.message || err), 'error');
         }
-      };
-
-      recog.onend = () => {
-        setIsRecording(false);
-        recognitionRef.current = null;
-      };
-
-      recognitionRef.current = recog;
-      setRecognition(recog);
-      recog.start();
-    } catch (e: any) {
-      setIsRecording(false);
-      recognitionRef.current = null;
-      showToast('Failed to start speech recognition: ' + (e.message || e), 'error');
-    }
-  }, [isRecording, showToast]);
+      });
+  }, [isRecording, showToast, stopSpeaking]);
 
   return (
     <AppContext.Provider

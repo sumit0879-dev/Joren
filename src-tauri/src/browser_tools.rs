@@ -1,9 +1,5 @@
-use crate::browser::{
-    browser_click_element, browser_close_tab, browser_create_tab, browser_focus_element,
-    browser_get_multi_state, browser_go_back_tab, browser_go_forward_tab, browser_navigate_tab,
-    browser_observe_tab, browser_press_key, browser_reload_tab, browser_screenshot_tab,
-    browser_scroll, browser_switch_tab, browser_type_element, browser_wait, BrowserState,
-};
+use crate::browser::BrowserState;
+use crate::browser_engine::{BrowserEngine, CefBrowserEngine};
 use crate::browser_risk::{BrowserActionContext, BrowserRiskDecision, BrowserRiskEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -1083,18 +1079,22 @@ async fn execute_browser_tool_internal(
         }
     }
 
+    let engine = CefBrowserEngine::new();
+
     match tool_name {
         "browser_get_tabs" => {
-            let multi = browser_get_multi_state(app, state).await?;
+            let state_val = engine.get_state()?;
+            let tabs = state_val.get("tabs").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let active_id = state_val.get("active_tab_id").and_then(|v| v.as_str()).map(|s| s.to_string());
             let tabs_json = json!({
-                "tabs": multi.tabs,
-                "active_tab_id": multi.active_tab_id,
-                "total_tabs": multi.tabs.len()
+                "tabs": tabs,
+                "active_tab_id": active_id,
+                "total_tabs": tabs.len()
             });
             Ok(BrowserToolExecutionResult {
                 success: true,
                 tool_name: tool_name.to_string(),
-                tab_id: multi.active_tab_id,
+                tab_id: active_id,
                 data: Some(tabs_json),
                 error: None,
                 error_code: None,
@@ -1103,17 +1103,21 @@ async fn execute_browser_tool_internal(
         }
 
         "browser_get_active_tab" => {
-            let multi = browser_get_multi_state(app, state).await?;
-            let active = multi
-                .tabs
-                .iter()
-                .find(|t| Some(&t.id) == multi.active_tab_id.as_ref());
+            let state_val = engine.get_state()?;
+            let active_id = state_val.get("active_tab_id").and_then(|v| v.as_str());
+            let tabs = state_val.get("tabs").and_then(|v| v.as_array());
+            let active = if let (Some(aid), Some(t_arr)) = (active_id, tabs) {
+                t_arr.iter().find(|t| t.get("id").and_then(|id| id.as_str()) == Some(aid)).cloned()
+            } else {
+                None
+            };
             if let Some(tab) = active {
+                let tid = tab.get("id").and_then(|id| id.as_str()).map(|s| s.to_string());
                 Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab.id.clone()),
-                    data: Some(json!(tab)),
+                    tab_id: tid,
+                    data: Some(tab),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -1136,40 +1140,17 @@ async fn execute_browser_tool_internal(
                 .get("tab_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
-            let scope = args
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
 
-            match browser_observe_tab(app, tab_id.to_string(), scope, state).await {
-                Ok(obs) => {
-                    let compact_data = json!({
-                        "tab_id": obs.tab_id,
-                        "url": obs.url,
-                        "title": obs.title,
-                        "generation": obs.generation,
-                        "fingerprint": obs.fingerprint,
-                        "viewport": obs.viewport,
-                        "visible_text": obs.visible_text.chars().take(20000).collect::<String>(),
-                        "selected_text": obs.selected_text,
-                        "regions": obs.regions,
-                        "headings": obs.headings,
-                        "interactive_elements_count": obs.interactive_elements.len(),
-                        "interactive_elements": obs.interactive_elements.iter().take(60).collect::<Vec<_>>(),
-                        "forms": obs.forms,
-                        "links": obs.links.iter().take(30).collect::<Vec<_>>(),
-                        "timestamp": obs.timestamp,
-                    });
-                    Ok(BrowserToolExecutionResult {
-                        success: true,
-                        tool_name: tool_name.to_string(),
-                        tab_id: Some(tab_id.to_string()),
-                        data: Some(compact_data),
-                        error: None,
-                        error_code: None,
-                        duration_ms: start.elapsed().as_millis() as u64,
-                    })
-                }
+            match engine.observe(tab_id) {
+                Ok(obs) => Ok(BrowserToolExecutionResult {
+                    success: true,
+                    tool_name: tool_name.to_string(),
+                    tab_id: Some(tab_id.to_string()),
+                    data: Some(obs),
+                    error: None,
+                    error_code: None,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                }),
                 Err(e) => Ok(BrowserToolExecutionResult {
                     success: false,
                     tool_name: tool_name.to_string(),
@@ -1188,17 +1169,12 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_screenshot_tab(tab_id.to_string(), None, state).await {
+            match engine.screenshot(tab_id) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({
-                        "tab_id": res.tab_id,
-                        "width": res.width,
-                        "height": res.height,
-                        "data_url_length": res.data_url.len(),
-                    })),
+                    data: Some(res),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -1225,25 +1201,12 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'url'.".to_string())?;
 
-            match browser_create_tab(
-                app,
-                tab_id.to_string(),
-                Some(url.to_string()),
-                None,
-                None,
-                state,
-            )
-            .await
-            {
+            match engine.create_tab(Some(tab_id), Some(url)) {
                 Ok(tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab.id),
-                    data: Some(json!({
-                        "tab_id": tab_id,
-                        "url": tab.url,
-                        "title": tab.title,
-                    })),
+                    tab_id: Some(tab_id.to_string()),
+                    data: Some(tab),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -1266,12 +1229,12 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_switch_tab(app, tab_id.to_string(), None, state).await {
+            match engine.switch_tab(tab_id) {
                 Ok(tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab.id),
-                    data: Some(json!({ "tab_id": tab_id, "url": tab.url })),
+                    tab_id: Some(tab_id.to_string()),
+                    data: Some(tab),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -1294,14 +1257,14 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_close_tab(app, tab_id.to_string(), state).await {
+            match engine.close_tab(tab_id) {
                 Ok(next_tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
                     data: Some(json!({
                         "closed_tab_id": tab_id,
-                        "next_active_tab": next_tab.map(|t| t.id),
+                        "next_active_tab": next_tab,
                     })),
                     error: None,
                     error_code: None,
@@ -1325,7 +1288,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_go_back_tab(app, tab_id.to_string()).await {
+            match crate::cef::tabs::go_back(&json!({ "tabId": tab_id })) {
                 Ok(_) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -1353,7 +1316,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_go_forward_tab(app, tab_id.to_string()).await {
+            match crate::cef::tabs::go_forward(&json!({ "tabId": tab_id })) {
                 Ok(_) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -1381,7 +1344,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match browser_reload_tab(app, tab_id.to_string()).await {
+            match crate::cef::tabs::reload(&json!({ "tabId": tab_id })) {
                 Ok(_) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -1413,21 +1376,14 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'element_id'.".to_string())?;
 
-            match browser_click_element(app, tab_id.to_string(), element_id.to_string(), state)
-                .await
-            {
+            match engine.click(tab_id, element_id) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({
-                        "element_id": res.element_id,
-                        "page_changed": res.page_changed,
-                        "url_changed": res.url_changed,
-                        "resulting_url": res.resulting_url,
-                    })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1468,26 +1424,14 @@ async fn execute_browser_tool_internal(
                 );
             }
 
-            match browser_type_element(
-                app,
-                tab_id.to_string(),
-                element_id.to_string(),
-                text.to_string(),
-                Some(clear_first),
-            )
-            .await
-            {
+            match engine.type_text(tab_id, element_id, text, clear_first) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({
-                        "element_id": res.element_id,
-                        "characters_typed": text.len(),
-                        "page_changed": res.page_changed,
-                    })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1510,20 +1454,28 @@ async fn execute_browser_tool_internal(
             let direction = args
                 .get("direction")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "Missing required parameter 'direction'.".to_string())?;
+                .unwrap_or("down");
             let amount = args
                 .get("amount")
                 .and_then(|v| v.as_i64())
-                .map(|n| n as i32);
+                .map(|n| n as i32)
+                .unwrap_or(300);
+            let (dx, dy) = match direction {
+                "up" => (0, -amount),
+                "down" => (0, amount),
+                "left" => (-amount, 0),
+                "right" => (amount, 0),
+                _ => (0, amount),
+            };
 
-            match browser_scroll(app, tab_id.to_string(), direction.to_string(), amount).await {
+            match engine.scroll(tab_id, dx, dy) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({ "direction": direction, "page_changed": res.page_changed })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1548,14 +1500,14 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'key'.".to_string())?;
 
-            match browser_press_key(app, tab_id.to_string(), key.to_string()).await {
+            match engine.press_key(tab_id, key) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({ "key": key, "page_changed": res.page_changed })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1580,14 +1532,14 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'element_id'.".to_string())?;
 
-            match browser_focus_element(app, tab_id.to_string(), element_id.to_string()).await {
+            match engine.focus_element(tab_id, element_id) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({ "element_id": res.element_id })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1607,35 +1559,15 @@ async fn execute_browser_tool_internal(
                 .get("tab_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
-            let condition = args
-                .get("condition")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "Missing required parameter 'condition'.".to_string())?;
-            let target = args
-                .get("target")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let timeout_ms = args.get("timeout_ms").and_then(|v| v.as_u64());
 
-            match browser_wait(
-                app,
-                tab_id.to_string(),
-                condition.to_string(),
-                target,
-                timeout_ms,
-                state,
-            )
-            .await
-            {
+            match crate::cef::tabs::wait_for_condition(args) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(
-                        json!({ "condition": condition, "resulting_url": res.resulting_url }),
-                    ),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {
@@ -1933,7 +1865,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'url'.".to_string())?;
 
-            match browser_navigate_tab(app, tab_id.to_string(), url.to_string(), state).await {
+            match engine.navigate(tab_id, url) {
                 Ok(loaded_url) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -2322,18 +2254,9 @@ async fn execute_browser_tool_internal(
                 .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'query'.".to_string())?;
-            let forward = args.get("forward").and_then(|v| v.as_bool());
-            let case_sensitive = args.get("case_sensitive").and_then(|v| v.as_bool());
+            let forward = args.get("forward").and_then(|v| v.as_bool()).unwrap_or(true);
 
-            match crate::browser::browser_find_in_page(
-                app,
-                tab_id.to_string(),
-                query.to_string(),
-                forward,
-                case_sensitive,
-            )
-            .await
-            {
+            match engine.find_in_page(tab_id, query, forward) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -2365,7 +2288,7 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_f64())
                 .ok_or_else(|| "Missing required parameter 'level'.".to_string())?;
 
-            match crate::browser::browser_zoom_set(app, tab_id.to_string(), level, state).await {
+            match engine.zoom_set(tab_id, level) {
                 Ok(applied_level) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -2393,12 +2316,12 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
 
-            match crate::browser::browser_print_tab(app, tab_id.to_string()).await {
+            match engine.print_tab(tab_id) {
                 Ok(ok) => Ok(BrowserToolExecutionResult {
-                    success: ok,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({ "status": "PRINT_INITIATED" })),
+                    data: Some(json!({ "status": "PRINT_INITIATED", "result": ok })),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -2417,16 +2340,11 @@ async fn execute_browser_tool_internal(
 
         // Phase 5.6F-B: Save Page & Reader Mode Execution
         "browser_reader_mode_enter" => {
-            let tab_id = args
-                .get("tab_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
-
-            match crate::browser::browser_reader_mode_enter(app, tab_id.to_string(), state).await {
+            match crate::cef::tabs::reader_mode_enter(args) {
                 Ok(doc) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: Some(json!({ "reader_document": doc })),
                     error: None,
                     error_code: None,
@@ -2435,7 +2353,7 @@ async fn execute_browser_tool_internal(
                 Err(e) => Ok(BrowserToolExecutionResult {
                     success: false,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: None,
                     error: Some(e),
                     error_code: Some("READER_ENTER_FAILED".to_string()),
@@ -2445,16 +2363,11 @@ async fn execute_browser_tool_internal(
         }
 
         "browser_reader_mode_exit" => {
-            let tab_id = args
-                .get("tab_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
-
-            match crate::browser::browser_reader_mode_exit(app, tab_id.to_string(), state).await {
+            match crate::cef::tabs::reader_mode_exit(args) {
                 Ok(ok) => Ok(BrowserToolExecutionResult {
-                    success: ok,
+                    success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: Some(json!({ "status": "READER_MODE_EXITED" })),
                     error: None,
                     error_code: None,
@@ -2463,7 +2376,7 @@ async fn execute_browser_tool_internal(
                 Err(e) => Ok(BrowserToolExecutionResult {
                     success: false,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: None,
                     error: Some(e),
                     error_code: Some("READER_EXIT_FAILED".to_string()),
@@ -2473,16 +2386,11 @@ async fn execute_browser_tool_internal(
         }
 
         "browser_reader_mode_get" => {
-            let tab_id = args
-                .get("tab_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
-
-            match crate::browser::browser_reader_mode_get(tab_id.to_string()).await {
+            match crate::cef::tabs::reader_mode_get(args) {
                 Ok(doc_opt) => Ok(BrowserToolExecutionResult {
-                    success: doc_opt.is_some(),
+                    success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: Some(json!({ "reader_document": doc_opt })),
                     error: None,
                     error_code: None,
@@ -2491,7 +2399,7 @@ async fn execute_browser_tool_internal(
                 Err(e) => Ok(BrowserToolExecutionResult {
                     success: false,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab_id.to_string()),
+                    tab_id: args.get("tab_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
                     data: None,
                     error: Some(e),
                     error_code: Some("READER_GET_FAILED".to_string()),
@@ -2507,17 +2415,11 @@ async fn execute_browser_tool_internal(
                 .ok_or_else(|| "Missing required parameter 'tab_id'.".to_string())?;
             let custom_filename = args
                 .get("custom_filename")
+                .or_else(|| args.get("path"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .unwrap_or("saved_page.html");
 
-            match crate::browser::browser_save_page_html(
-                app,
-                tab_id.to_string(),
-                custom_filename,
-                state,
-            )
-            .await
-            {
+            match engine.save_page_html(tab_id, custom_filename) {
                 Ok(path) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
@@ -2786,16 +2688,12 @@ async fn execute_browser_tool_internal(
                     )
                 });
 
-            match browser_create_tab(app, tab_id.clone(), initial_url, None, None, state).await {
+            match engine.create_tab(Some(&tab_id), initial_url.as_deref()) {
                 Ok(tab) => Ok(BrowserToolExecutionResult {
                     success: true,
                     tool_name: tool_name.to_string(),
-                    tab_id: Some(tab.id.clone()),
-                    data: Some(json!({
-                        "tab_id": tab.id,
-                        "url": tab.url,
-                        "title": tab.title,
-                    })),
+                    tab_id: Some(tab_id),
+                    data: Some(tab),
                     error: None,
                     error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
@@ -2826,25 +2724,14 @@ async fn execute_browser_tool_internal(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing required parameter 'value'.".to_string())?;
 
-            match crate::browser::browser_select_option(
-                app,
-                tab_id.to_string(),
-                element_id.to_string(),
-                value.to_string(),
-            )
-            .await
-            {
+            match engine.select_option(tab_id, element_id, value) {
                 Ok(res) => Ok(BrowserToolExecutionResult {
-                    success: res.success,
+                    success: true,
                     tool_name: tool_name.to_string(),
                     tab_id: Some(tab_id.to_string()),
-                    data: Some(json!({
-                        "element_id": res.element_id,
-                        "selected_value": value,
-                        "page_changed": res.page_changed,
-                    })),
-                    error: res.error,
-                    error_code: res.error_code,
+                    data: Some(res),
+                    error: None,
+                    error_code: None,
                     duration_ms: start.elapsed().as_millis() as u64,
                 }),
                 Err(e) => Ok(BrowserToolExecutionResult {

@@ -105,8 +105,6 @@ export const SettingsView: React.FC = () => {
   const [localLoadingStatus, setLocalLoadingStatus] = useState<string | null>(null);
   const [isStartingServer, setIsStartingServer] = useState(false);
 
-  // Kokoro local models
-  const [kokoroModels, setKokoroModels] = useState<string[]>([]);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
@@ -194,7 +192,6 @@ export const SettingsView: React.FC = () => {
   useEffect(() => {
     loadCustomApps();
     loadPersonalNotes();
-    tauriService.getKokoroModels().then(setKokoroModels).catch(() => {});
 
     const unlistenProgress = tauriService.onModelProgress((msg) => {
       setLocalLoadingStatus(msg);
@@ -216,7 +213,17 @@ export const SettingsView: React.FC = () => {
 
   const loadPersonalNotes = async () => {
     try {
-      const savedLocal = localStorage.getItem('miko_quick_notes');
+      let savedLocal = localStorage.getItem('joren_quick_notes');
+      if (!savedLocal) {
+        // Safe legacy migration from miko_quick_notes
+        const legacyNotes = localStorage.getItem('miko_quick_notes');
+        if (legacyNotes) {
+          savedLocal = legacyNotes;
+          try {
+            localStorage.setItem('joren_quick_notes', legacyNotes);
+          } catch {}
+        }
+      }
       if (savedLocal) {
         setNoteContent(savedLocal);
       }
@@ -233,7 +240,7 @@ export const SettingsView: React.FC = () => {
   const handleNoteChange = (val: string) => {
     setNoteContent(val);
     try {
-      localStorage.setItem('miko_quick_notes', val);
+      localStorage.setItem('joren_quick_notes', val);
     } catch {}
   };
 
@@ -1232,90 +1239,42 @@ export const SettingsView: React.FC = () => {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => updateSetting('ttsEngine', 'cloud')}
-                className={
-                  'p-4 rounded-2xl border text-left transition ' +
-                  (settings.ttsEngine !== 'local'
-                    ? 'bg-cyan-500/20 border-cyan-500/50 text-white'
-                    : 'bg-white/[0.03] border-white/10 text-slate-400')
-                }
-              >
-                <div className="font-bold text-sm text-cyan-300">EdgeTTS Cloud Neural</div>
-                <div className="text-xs text-slate-400 mt-1">High-quality Indian English & Hindi neural voices</div>
-              </button>
-
-              <button
-                onClick={() => updateSetting('ttsEngine', 'local')}
-                className={
-                  'p-4 rounded-2xl border text-left transition ' +
-                  (settings.ttsEngine === 'local'
-                    ? 'bg-cyan-500/20 border-cyan-500/50 text-white'
-                    : 'bg-white/[0.03] border-white/10 text-slate-400')
-                }
-              >
-                <div className="font-bold text-sm text-cyan-300">Kokoro ONNX Local</div>
-                <div className="text-xs text-slate-400 mt-1">Offline synthesized ONNX voice engine</div>
-              </button>
+            <div className="p-5 rounded-2xl glass-card border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
+                  Cloud Neural Voices (Edge TTS)
+                </label>
+                <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-full">
+                  High-Fidelity Neural Engine
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                Natural-sounding online speech synthesis in Indian English, Hindi, and studio US accents.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-2">
+                {cloudVoices.map((v) => {
+                  const isVoiceSelected = (settings.ttsVoice || 'hi-IN-SwaraNeural') === v.id;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => updateSetting('ttsVoice', v.id)}
+                      className={
+                        'p-3 rounded-xl text-left transition border flex items-center justify-between ' +
+                        (isVoiceSelected
+                          ? 'bg-cyan-500/20 border-cyan-500/60 text-white'
+                          : 'bg-white/[0.02] border-white/5 text-slate-300 hover:bg-white/[0.05]')
+                      }
+                    >
+                      <div className="truncate mr-2">
+                        <div className="text-xs font-bold text-slate-100">{v.label}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">{v.id}</div>
+                      </div>
+                      {isVoiceSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-
-            {settings.ttsEngine !== 'local' ? (
-              <div className="p-5 rounded-2xl glass-card border border-white/10 space-y-3">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
-                  Cloud Voice Models
-                </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {cloudVoices.map((v) => {
-                    const isVoiceSelected = (settings.ttsVoice || 'hi-IN-SwaraNeural') === v.id;
-                    return (
-                      <button
-                        key={v.id}
-                        onClick={() => updateSetting('ttsVoice', v.id)}
-                        className={
-                          'p-3 rounded-xl text-left transition border flex items-center justify-between ' +
-                          (isVoiceSelected
-                            ? 'bg-cyan-500/20 border-cyan-500/60 text-white'
-                            : 'bg-white/[0.02] border-white/5 text-slate-300 hover:bg-white/[0.05]')
-                        }
-                      >
-                        <div className="truncate mr-2">
-                          <div className="text-xs font-bold text-slate-100">{v.label}</div>
-                          <div className="text-[10px] text-slate-500 font-mono">{v.id}</div>
-                        </div>
-                        {isVoiceSelected && <Check className="w-4 h-4 text-cyan-400 shrink-0" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="p-5 rounded-2xl glass-card border border-white/10 space-y-3">
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
-                  Kokoro ONNX Models
-                </label>
-                <div className="space-y-2">
-                  {kokoroModels.map((m) => {
-                    const isKokoroSelected = settings.kokoroModel === m;
-                    return (
-                      <button
-                        key={m}
-                        onClick={() => updateSetting('kokoroModel', m)}
-                        className={
-                          'w-full p-3 rounded-xl text-left transition border flex items-center justify-between ' +
-                          (isKokoroSelected
-                            ? 'bg-cyan-500/20 border-cyan-500/60 text-white'
-                            : 'bg-white/[0.02] border-white/5 text-slate-300')
-                        }
-                      >
-                        <span className="font-mono text-xs">{m}</span>
-                        {isKokoroSelected && <Check className="w-4 h-4 text-cyan-400" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
 
             <div className="p-5 rounded-2xl glass-card border border-white/10 flex items-center justify-between">
               <div>

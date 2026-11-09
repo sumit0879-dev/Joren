@@ -80,13 +80,21 @@ export function formatSearchUrl(query: string, engineId?: SearchEngineId): strin
   return engine.searchUrlTemplate.replace('%s', encodeURIComponent(query.trim()));
 }
 
+export const ALLOWED_INTERNAL_ROUTES = new Set([
+  'newtab',
+  'history',
+  'bookmarks',
+  'downloads',
+  'settings',
+]);
+
 /**
  * Normalizes user input into a direct HTTPS URL or a deterministic search engine query URL.
  */
 export function normalizeBrowserUrl(input: string, engineId?: SearchEngineId): string {
   const trimmed = input.trim();
   if (!trimmed) {
-    return 'https://example.com';
+    return 'joren://newtab';
   }
 
   // Security check: Block javascript: execution
@@ -96,14 +104,26 @@ export function normalizeBrowserUrl(input: string, engineId?: SearchEngineId): s
   }
 
   const lower = trimmed.toLowerCase();
-  const cleaned = lower.endsWith('/') ? lower.slice(0, -1) : lower;
+  let normalized = lower.endsWith('/') ? lower.slice(0, -1) : lower;
 
-  // Explicitly supported internal routes (joren:// with legacy edith:// mapping)
-  if (cleaned.startsWith('joren://')) {
-    return cleaned;
+  // Legacy edith:// route mapping
+  if (normalized.startsWith('edith://')) {
+    normalized = normalized.replace(/^edith:\/\//, 'joren://');
   }
-  if (cleaned.startsWith('edith://')) {
-    return cleaned.replace(/^edith:\/\//, 'joren://');
+
+  // Explicitly supported internal routes (with strict allowlist and privileged barrier)
+  if (normalized.startsWith('joren://')) {
+    // Strictly block joren://app/ and privileged IPC endpoints
+    if (normalized.startsWith('joren://app')) {
+      console.warn('Blocked attempt to navigate to privileged application origin.');
+      return 'joren://newtab';
+    }
+    const route = normalized.replace(/^joren:\/\//, '').split('?')[0].split('#')[0];
+    if (ALLOWED_INTERNAL_ROUTES.has(route)) {
+      return `joren://${route}`;
+    }
+    // Unknown or unapproved joren:// route: treat original input as search query
+    return formatSearchUrl(trimmed, engineId);
   }
 
   if (
@@ -194,51 +214,66 @@ class BrowserController {
     profileId?: string
   ): Promise<BrowserTabInfo> {
     if (bounds) this.currentBounds = bounds;
-    const normUrl = url ? normalizeBrowserUrl(url) : 'https://example.com';
-    const res = await tauriService.browserCreateTab(tabId, normUrl, this.currentBounds || undefined, profileId);
+    const normUrl = url ? normalizeBrowserUrl(url) : 'joren://newtab';
+    try {
+      const res = await tauriService.browserCreateTab(tabId, normUrl, this.currentBounds || undefined, profileId);
 
-    const existingIdx = this.tabs.findIndex((t) => t.id === tabId);
-    this.tabs.forEach((t) => (t.is_active = false));
-    if (existingIdx >= 0) {
-      this.tabs[existingIdx] = res;
-    } else {
-      this.tabs.push(res);
+      const existingIdx = this.tabs.findIndex((t) => t.id === tabId);
+      this.tabs.forEach((t) => (t.is_active = false));
+      if (existingIdx >= 0) {
+        this.tabs[existingIdx] = res;
+      } else {
+        this.tabs.push(res);
+      }
+      this.activeTabId = tabId;
+      this.isVisible = true;
+      this.notify();
+      return res;
+    } catch (err) {
+      console.error(`createTab failed for ${tabId}:`, err);
+      throw err;
     }
-    this.activeTabId = tabId;
-    this.isVisible = true;
-    this.notify();
-    return res;
   }
 
   public async switchTab(tabId: string, bounds?: BrowserViewportBounds): Promise<BrowserTabInfo> {
     if (bounds) this.currentBounds = bounds;
-    const res = await tauriService.browserSwitchTab(tabId, this.currentBounds || undefined);
-    this.tabs.forEach((t) => {
-      t.is_active = t.id === tabId;
-      if (t.id === tabId) {
-        t.url = res.url;
-        t.title = res.title;
-        t.favicon = res.favicon;
-      }
-    });
-    this.activeTabId = tabId;
-    this.isVisible = true;
-    this.notify();
-    return res;
+    try {
+      const res = await tauriService.browserSwitchTab(tabId, this.currentBounds || undefined);
+      this.tabs.forEach((t) => {
+        t.is_active = t.id === tabId;
+        if (t.id === tabId) {
+          t.url = res.url;
+          t.title = res.title;
+          t.favicon = res.favicon;
+        }
+      });
+      this.activeTabId = tabId;
+      this.isVisible = true;
+      this.notify();
+      return res;
+    } catch (err) {
+      console.error(`switchTab failed for ${tabId}:`, err);
+      throw err;
+    }
   }
 
   public async closeTab(tabId: string): Promise<BrowserTabInfo | null> {
-    const res = await tauriService.browserCloseTab(tabId);
-    this.tabs = this.tabs.filter((t) => t.id !== tabId);
-    if (res) {
-      this.activeTabId = res.id;
-      this.tabs.forEach((t) => (t.is_active = t.id === res.id));
-    } else {
-      this.activeTabId = null;
-      this.isVisible = false;
+    try {
+      const res = await tauriService.browserCloseTab(tabId);
+      this.tabs = this.tabs.filter((t) => t.id !== tabId);
+      if (res) {
+        this.activeTabId = res.id;
+        this.tabs.forEach((t) => (t.is_active = t.id === res.id));
+      } else {
+        this.activeTabId = null;
+        this.isVisible = false;
+      }
+      this.notify();
+      return res;
+    } catch (err) {
+      console.error(`closeTab failed for ${tabId}:`, err);
+      throw err;
     }
-    this.notify();
-    return res;
   }
 
   public async reopenLastClosedTab(bounds?: BrowserViewportBounds): Promise<BrowserTabInfo | null> {
@@ -275,13 +310,22 @@ class BrowserController {
       tab.is_loading = true;
       this.notify();
     }
-    const res = await tauriService.browserNavigateTab(tabId, normalized);
-    if (tab) {
-      tab.url = res;
-      tab.is_loading = false;
-      this.notify();
+    try {
+      const res = await tauriService.browserNavigateTab(tabId, normalized);
+      if (tab) {
+        tab.url = res;
+        tab.is_loading = false;
+        this.notify();
+      }
+      return res;
+    } catch (err) {
+      if (tab) {
+        tab.is_loading = false;
+        this.notify();
+      }
+      console.error(`navigateTab failed for ${tabId}:`, err);
+      throw err;
     }
-    return res;
   }
 
   public async goBack(tabId?: string): Promise<void> {

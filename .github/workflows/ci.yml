@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
+      - feat/*
+      - fix/*
   pull_request:
     branches:
       - main
@@ -45,7 +49,7 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build frontend
+      - name: Build frontend (TypeScript & Vite)
         run: npm run build
 
       - name: Setup Rust toolchain (stable)
@@ -59,13 +63,10 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             src-tauri/target/
-          key: ${{ runner.os }}-cargo-ci-v3-joren-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/build.rs') }}
+          key: ${{ runner.os }}-cargo-ci-v4-joren-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-ci-v3-joren-${{ hashFiles('src-tauri/Cargo.lock') }}-
-            ${{ runner.os }}-cargo-ci-v3-joren-
-
-      - name: Run Rust cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+            ${{ runner.os }}-cargo-ci-v4-joren-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-ci-v4-joren-
 
       - name: Run Rust unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib

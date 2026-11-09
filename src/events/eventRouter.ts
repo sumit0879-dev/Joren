@@ -1,4 +1,4 @@
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type UnlistenFn } from '../services/tauri';
 import type { EdithEventEnvelope, EdithPayload, EventCategory } from './types';
 
 export type EventHandler<T = EdithPayload> = (event: EdithEventEnvelope<T>) => void;

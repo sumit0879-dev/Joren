@@ -1,5 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
-import { isTauri } from './tauri';
+import { invoke, isTauri } from './tauri';
 
 export interface SubmitTurnRequest {
   sessionId: string;

@@ -17,10 +17,19 @@ import { browserController } from './services/browserController';
 const MainLayout: React.FC = () => {
   const { activeTab, setActiveTab, isTelemetryOpen, toggleTelemetry } = useApp();
 
-  // Browser WebView Visibility Lifecycle: Ensure native child webviews are hidden when navigating away
+  // Mark app as ready on window for native CEF smoke test and diagnostic probes
+  React.useEffect(() => {
+    (window as any).__JOREN_APP_READY__ = true;
+    window.dispatchEvent(new CustomEvent('joren-app-ready', { detail: { timestamp: Date.now() } }));
+    console.log('[JOREN] React application mounted and ready (__JOREN_APP_READY__ = true)');
+  }, []);
+
+  // Browser WebView Visibility Lifecycle: Ensure native child webviews are hidden when navigating away, and restored when navigating back
   React.useEffect(() => {
     if (activeTab !== 'browser') {
       browserController.hide().catch(() => {});
+    } else {
+      browserController.show().catch(() => {});
     }
   }, [activeTab]);
 
