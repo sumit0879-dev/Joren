@@ -94,7 +94,7 @@ impl EdithRuntimeState {
 
     /// Creates a default in-memory mock EdithRuntimeState for tests without requiring boilerplate setup.
     pub fn mock_default() -> Self {
-        let conversation_core = Arc::new(ConversationCore::mock(Arc::new(ProviderRegistry::new())));
+        let conversation_core = Arc::new(ConversationCore::mock(ProviderRegistry::new()));
         let task_runtime = Arc::new(TaskRuntime::new(None));
         let tool_registry = Arc::new(ToolRegistry::new());
         let domain_registry = Arc::new(crate::tools::DomainExecutorRegistry::new());

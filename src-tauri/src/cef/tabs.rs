@@ -852,6 +852,7 @@ pub fn set_bounds(args: &serde_json::Value) -> Result<serde_json::Value, String>
 }
 
 pub fn set_clipping_region(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let cutouts_opt = args.get("cutouts").and_then(|v| v.as_array()).cloned();
     run_on_ui(move || {
         let guard = state().lock().unwrap();
         let active = guard.tabs.iter().find(|t| guard.active_id.as_deref() == Some(&t.id));
@@ -875,8 +876,7 @@ pub fn set_clipping_region(args: &serde_json::Value) -> Result<serde_json::Value
             let tab_w = (tab.bounds.width as f64 * scale).round() as i32;
             let tab_h = (tab.bounds.height as f64 * scale).round() as i32;
 
-            let cutouts = args.get("cutouts").and_then(|v| v.as_array());
-            if let Some(list) = cutouts {
+            if let Some(ref list) = cutouts_opt {
                 if !list.is_empty() && tab_w > 0 && tab_h > 0 {
                     unsafe {
                         let base_rgn = CreateRectRgn(0, 0, tab_w, tab_h);
