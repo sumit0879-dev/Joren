@@ -69,15 +69,4 @@ jobs:
             ${{ runner.os }}-cargo-ci-v4-joren-
 
       - name: Run Rust unit tests
-        shell: pwsh
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --lib --test cef_browser_tests 2>&1 | Tee-Object -FilePath "unit-tests.log"
-          if ($LASTEXITCODE -ne 0) {
-            $err = (Get-Content "unit-tests.log" | Select-String -Pattern "error\[|error:" -Context 1,10 | Out-String).Trim()
-            if (-not $err) {
-              $err = (Get-Content "unit-tests.log" -Tail 60 | Out-String).Trim()
-            }
-            $escaped = $err -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
-            Write-Host "::error title=Cargo Unit Test Failure::$escaped"
-            exit 1
-          }
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --test cef_browser_tests
